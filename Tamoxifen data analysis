@@ -60,6 +60,119 @@ FinalData$TrtGen=FinalData$GeneBinary*Final.data$treatment  ## interaction term 
 
 
 
+target.time=adjdiff$time   ## time to calculate for the average causal effect
+
+FinalData$Y=log(FinalData$Y)  ## convert the observed time into log scale
+FinalData$treatment=as.numeric(as.character(FinalData$treatment))
+
+Loss_fun_BJ_logistic_fast=function(x,data,covariates_logistic,covariates_aft,time_var,delta_var,treat_var,return_components = FALSE){  ##specify the column name for each covariate and variable
+
+  p_aft <- length(covariates_aft)
+  p_logistic <- length(covariates_logistic)
+  
+  Beta <- x[1:p_aft]
+  gamma <- x[p_aft + 1]
+  Alpha <- x[(p_aft + 2):(p_aft + 2 + p_logistic)]
+
+  CovX_aft <- as.matrix(data[, covariates_aft, drop = FALSE])
+  CovX_log <- as.matrix(data[, covariates_logistic, drop = FALSE])
+
+  CovZ <- data[[treat_var]]
+  if (is.factor(CovZ)) {
+  CovZ <- as.numeric(levels(CovZ))[CovZ]
+  }
+  ObsTime <- as.numeric(data[[time_var]])
+  Delta <- as.numeric(data[[delta_var]])
+  n <- nrow(data)
+
+
+
+pi <- as.vector(Alpha %*% t(cbind(1, CovX_log)))
+Pr=G.link(pi)
+
+W<-as.vector((CovZ==1) * (1/Pr) + (CovZ==0) * (1/(1-Pr)))
+error_time <- as.vector(ObsTime - (Beta %*% t(CovX_aft)) - gamma * CovZ)
+
+
+
+
+
+res.akm <- revisedAKME(times=error_time, failures=Delta,variable=CovZ, weights=W)
+
+imputed_time = impute_survival_times(obs_time=ObsTime, delta=Delta, cov_z=CovZ, cov_x=CovX_aft, old_beta=Beta, old_gamma=gamma, res.akm)
+
+
+new_X=CovX_aft-matrix(rep(apply(CovX_aft,2,mean),n),n,length(apply(CovX_aft,2,mean)),byrow=TRUE)
+
+Z_bar=mean(CovZ)
+Obstime_bar=mean(imputed_time)
+
+new_Z=(CovZ-Z_bar)
+new_Obstime=(imputed_time-Obstime_bar)
+
+component1=(new_Obstime-(Beta%*%t(new_X))-gamma*new_Z)^2
+component2=(CovZ*log(exp(Alpha%*%t(cbind(1,CovX_log)))/(1+exp(Alpha%*%t(cbind(1,CovX_log))))))+((1-CovZ)*log(1-(exp(Alpha%*%t(cbind(1,CovX_log)))/(1+exp(Alpha%*%t(cbind(1,CovX_log)))))))
+
+
+final_loss=((0.5*sum(component1))-sum(component2))/n
+
+
+if (return_components) {
+    return(list(
+      loss = final_loss,
+      Beta = Beta,
+      gamma = gamma,
+      Alpha = Alpha,
+      imputed_time = imputed_time,
+      Pr = Pr,
+      IPTW=W,
+      CovZ = CovZ,
+      CovX_aft = CovX_aft,
+      CovX_log = CovX_log
+    ))
+  } else {
+    return(final_loss)
+  }
+
+
+}## for function
+
+
+# Define covariates
+cov_aft <- c("Age", "grade", "size", "GeneBinary","TrtGen")
+cov_log <- c("Age", "grade", "size", "GeneBinary")
+
+
+# Parameter vector (Beta + gamma + Alpha)
+init_params <- c(-0.2,0.02,-0.3,-0.4,0.5,0.1,-3.1,0.12,-0.01,0.4,-0.2)
+
+
+
+fit <- optim(
+  par = init_params,
+  fn = Loss_fun_BJ_logistic_fast,
+  data =FinalData,
+  covariates_logistic = cov_log,
+  covariates_aft = cov_aft,
+  time_var = "Y",
+  delta_var = "Censor",
+  treat_var = "treatment",return_components =FALSE)
+
+
+
+
+fit_out <- Loss_fun_BJ_logistic_fast(
+  x = fit$par,
+  data = FinalData,
+  covariates_logistic = cov_log,
+  covariates_aft = cov_aft,
+  time_var = "Y",
+  delta_var = "Censor",
+  treat_var = "treatment",
+  return_components = TRUE
+)
+
+
 
 
 

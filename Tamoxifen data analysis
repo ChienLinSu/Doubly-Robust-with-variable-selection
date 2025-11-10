@@ -1,7 +1,24 @@
 
-# Tamoxifen data analysis
-# you should download the orginal dataset from NHLBI, which contains "GSE6532_LUMINAL.RData.gz", decompress into LUMINAL.RData
+#################################################################### Tamoxifen data analysis  ##########################################################################################################################
+################################################## You should download the orginal dataset from NHLBI, which contains "GSE6532_LUMINAL.RData.gz", decompress into LUMINAL.RData  ########################################
 
+library(ggplot2)  
+library(ggfortify)
+library(survminer)
+library(survival)
+library(ggplot2)
+library(riskRegression)
+library(pammtools)
+library(adjustedCurves)
+library(foreach)
+library(MASS)
+library(rockchalk)
+library(nleqslv)
+library(np)
+library(parallel)
+library(mvtnorm)
+library(bujar)
+library(glmnet)
 
 load("LUMINAL.RData")
 
@@ -57,7 +74,8 @@ FinalData$TrtGen=FinalData$GeneBinary*Final.data$treatment  ## interaction term 
 
 
 
-### The Average Causal Effect is estimated using the adjusted Kaplan-Meier Estimator 
+###################################    The Average Causal Effect is estimated using the adjusted Kaplan-Meier Estimator (Xie and Liu 2005) ###############################################################################
+#######################################################################################################################################################################################################
 
 FinalData$treatment=as.factor(FinalData$treatment)
 treatment_model <- glm(treatment ~ Age + grade +size+as.factor(GeneBinary),
@@ -70,9 +88,10 @@ adjsurv <- adjustedsurv(data=FinalData,
                         method="iptw_km",
                         treatment_model=treatment_model,
                         conf_int=TRUE,bootstrap=TRUE,
-                        )###times=unique(c(0,sort(FinalData$Y[FinalData$Censor==1])))
+                        )
 
-
+# calculate the Average Causal Effect based on Adjusted Kaplan-Meier Estimator
+adjdiff <- adjusted_curve_diff(adjsurv,group_1="1", group_2="0",conf_int=TRUE,use_boot=TRUE)
 
 ############################################################ Perform the Data Analysis based on the Proposed Doubly Weighted, G-formula and Doubly Robust Estimator  ###########################
 ################################################################################################################################################################################################
@@ -184,10 +203,6 @@ Estimate_beta0(fit_out)
 
 
 
-# calculate the whole difference curve
-adjdiff <- adjusted_curve_diff(adjsurv,group_1="1", group_2="0",conf_int=TRUE,use_boot=TRUE)
-
-
 
 ######################################## Bootstrap approach to obtain standard error estimation ########################################################################################################################
 #######################################  - Parameter estimators for the AFT model and the Propensity Score model. 
@@ -209,6 +224,7 @@ FinalOutput=bootstrap_pipeline (data=FinalData,
                                verbose = TRUE)
 
 ## The following output contains the estimation results of parameters in the AFT model and the Propensity Score model
+## including point estimates, standard errors, 95% confidence intervals and p-values
 
 create_two_panel_outputs (boot_out=FinalOutput,
                                      covariates_aft=cov_aft,
@@ -228,8 +244,7 @@ coord_cartesian(ylim = c(1,10))+  ylab("Weight")+scale_x_discrete(name ="Treatme
 
 
 
-### Plot: Average Causal Effect vs. Time based on Doubly Weighted, G-formula and Doubly Robust Estimators 
-
+### Plot: Average Causal Effect vs. Time based on Doubly Weighted, Adjusted Kaplan-Meier Estimator, G-formula and Doubly Robust Estimators 
 
 plotdata<- data.frame(Time=c(target.time,target.time,target.time,target.time), Difference=c(FinalOutput$curves$bootstrap$DR$point,adjdiff$diff,FinalOutput$curves$bootstrap$DW$point,FinalOutput$curves$bootstrap$KM$point),Estimator=c(rep("DR",length(target.time)),rep("AKME",length(target.time)),rep("DW",length(target.time)),rep("KM",length(target.time))), lower =c(FinalOutput$curves$bootstrap$DR$ci_low,adjdiff$ci_lower,FinalOutput$curves$bootstrap$DW$ci_low,FinalOutput$curves$bootstrap$KM$ci_low) , upper =c(FinalOutput$curves$bootstrap$DR$ci_up,adjdiff$ci_upper,FinalOutput$curves$bootstrap$DW$ci_up,FinalOutput$curves$bootstrap$KM$ci_up))
 

@@ -1,0 +1,6 @@
+
+# Tamoxifen data analysis
+# you should download the orginal dataset from NHLBI, which contains "GSE6532_LUMINAL.RData.gz", decompress into LUMINAL.RData
+# This file demostrates the entire procedure of the estimation
+
+load("LUMINAL.RData")

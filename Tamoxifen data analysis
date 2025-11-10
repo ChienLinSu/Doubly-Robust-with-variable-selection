@@ -1,6 +1,91 @@
 
 # Tamoxifen data analysis
 # you should download the orginal dataset from NHLBI, which contains "GSE6532_LUMINAL.RData.gz", decompress into LUMINAL.RData
-# This file demostrates the entire procedure of the estimation
+
 
 load("LUMINAL.RData")
+
+############################################################### Extract the data and organize it to have the final dataset  #################################################################################               
+##################################################################################################################################################################################################
+## untreated group
+
+trainY0 = data.frame(cbind("Y" = as.numeric(demo.untreated$t.rfs),
+		    "Censor" = as.numeric(demo.untreated$e.rfs),
+		    "Age" = as.numeric(demo.untreated$age),
+		    "grade" = as.factor(match(demo.untreated$grade, c(1:3), nomatch = 0)),
+		    "size" = as.numeric(demo.untreated$size)))
+rownames(trainY0) = rownames(demo.untreated)
+
+trainY0 = trainY0[!is.na(trainY0$Y) & !is.na(trainY0$Censor), ]
+
+## treated group
+trainY1 = data.frame(cbind("Y" = as.numeric(demo.tam$t.rfs),
+		    "Censor" = as.numeric(demo.tam$e.rfs),
+		    "Age" = as.numeric(demo.tam$age),
+		    "grade" = as.factor(match(demo.tam$grade, c(1:3), nomatch = 0)),
+		    "size" = as.numeric(demo.tam$size)))
+rownames(trainY1) = rownames(demo.tam)
+trainY1 = trainY1[!is.na(trainY1$Y) & !is.na(trainY1$Censor), ]
+Clinical = rbind(trainY0, trainY1)
+
+
+# get gene expression
+
+sd_select =380
+allx = rbind(data.untreated[match(rownames(trainY0), rownames(data.untreated)), ], 
+			 data.tam[match(rownames(trainY1), rownames(data.tam)), ])
+
+allsd = apply(allx, 2, sd)
+allsd[is.na(allsd)] = 0
+GeneExp = allx[, allsd >= sort(allsd, decreasing= TRUE)[sd_select] ]
+
+
+Y = Clinical$Y
+#trainX = cbind(GeneExp, Clinical$Age, Clinical$size, as.factor(Clinical$grade))
+treatment = c(rep(0, nrow(trainY0)), rep(1, nrow(trainY1)))
+#Censor = Clinical$Censor
+
+Final.data=cbind(Clinical,treatment,GeneExp)
+Final.data$treatment=ifelse(Final.data$treatment==1,"Tamoxifen","Control")
+mean(Final.data$Censor) ## censoring rate
+
+Final.data$Y=Final.data$Y/365  ## TRANSFORM days to years
+Final.data$treatment=ifelse(Final.data$treatment=="Tamoxifen",1,0)
+FinalData=Final.data[,c(1:6,which(colnames(Final.data)=="203824_at"))]
+FinalData$GeneBinary=ifelse(FinalData$"203824_at"<= -0.063, 1,0) ## this group has better survival in the treatment group compared to the control group
+FinalData$TrtGen=FinalData$GeneBinary*Final.data$treatment  ## interaction term between treatment and gene
+
+############################################################ Perform the Data Analysis based on the Proposed Doubly Weighted, G-formula and Doubly Robust Estimator  ###########################
+################################################################################################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

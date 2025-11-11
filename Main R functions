@@ -2,7 +2,14 @@
 
 
 
-######## Revised Adjusted Kaplan-Meier Estimator  #####
+################################################## Revised Adjusted Kaplan-Meier Estimator  ##################################################
+##############################################################################################################################################
+
+ # Input:
+  #   times     : residual times
+  #   failures   : event indicator (1 = event, 0 = censored)
+  #   variable   : treatment indicator (1 = treated, 0 = control)
+  #   weights   : IPTW weights; If NULL, then the function reduces to Kaplan-Meier estimator
 
 revisedAKME=function (times, failures, variable, weights)
 {
@@ -46,7 +53,9 @@ revisedAKME=function (times, failures, variable, weights)
  
 }
 
-##### Link function for Propensity Score (logistic regression model) #####
+
+#################################################### Link function for Propensity Score (logistic regression model) ##############################################################
+#################################################################################################################################################################################
 G.link=function(u){
 output=ifelse(u>=0,1/(1 + exp(-u)),exp(u)/(1 + exp(u)))
 return(output)
@@ -56,7 +65,9 @@ return(output)
 
 
 
- ##### Function to calculate the conditional mean used for imputation  #######
+################################################## Function to calculate the conditional mean used for imputation  ##############################################################
+#####################################################################################################################################################################################
+
 calculate_conditional_mean <- function(r, error_t, jump, survival_fun) {
   # locate t_j >= r
   loc <- which(error_t >= r)
@@ -67,7 +78,18 @@ calculate_conditional_mean <- function(r, error_t, jump, survival_fun) {
   return(A / B)
 }
 
-##### Imputation function for imputing the censored log survival time #######
+
+####################################################### Imputation function for imputing the censored log survival time #######################################################################################
+###############################################################################################################################################################################################################
+# Input:
+  #   obs_time     : observed log survival time
+  #   delta        : event indicator (1 = event, 0 = censored)
+  #   cov_z        : treatment indicator (1 = treated, 0 = control)
+  #   cov_x        : covariates considered in the AFT model
+  #   old_beta     : parameters beta related to covariates in the AFT model
+  #   old_gamma    : parameter gamma related to treatment cov_z
+  #   res_akm      : the adjusted Kaplan-Meier function
+
 impute_survival_times <- function(obs_time, delta, cov_z, cov_x, old_beta, old_gamma, res_akm) {
   N_size <- length(obs_time)
   XB <- as.vector(cov_x %*% old_beta)     # XB_i = sum(Beta * X_i)
@@ -131,8 +153,8 @@ impute_survival_times <- function(obs_time, delta, cov_z, cov_x, old_beta, old_g
 
 
 
-########################## KM estimate for ACE theta(t) ##############################################
-
+###################################################################### KM estimate for ACE theta(t) #########################################################################################################
+###########################################################################################################################################################################################################
 
 KM_fun<- function(t, ObsTime, Delta, CovZ, weights = NULL) {
   # ---------------------------------------------------------------
@@ -143,10 +165,10 @@ KM_fun<- function(t, ObsTime, Delta, CovZ, weights = NULL) {
   #
   # Input:
   #   t         : time(s) at which to evaluate survival difference
-  #   ObsTime   : observed time-to-event or censoring times
+  #   ObsTime   : observed time-to-event or censoring times in the log scale
   #   Delta     : event indicator (1 = event, 0 = censored)
   #   CovZ      : treatment indicator (1 = treated, 0 = control)
-  #   weights   : optional vector of observation weights
+  #   weights   : 
   #
   # Output:
   #   Numeric vector of S1(t) - S0(t)
@@ -178,13 +200,28 @@ KM_fun<- function(t, ObsTime, Delta, CovZ, weights = NULL) {
   return(diff_surv)
 }
 
-KM_fun(t=0.1,ObsTime=FinalData$Y,Delta=FinalData$Censor, CovZ=FinalData$treatment, weights = NULL)
 
 
 
+###################################################### Doubly weighted estimator for ACE theta(t) ###############################################################
+#################################################################################################################################################################
+  # ---------------------------------------------------------------
+  # Purpose:
+  #   Compute the difference in survival curves
+  #   between treated (CovZ = 1) and control (CovZ = 0) groups,
+  #   and return the difference S1(t) - S0(t) evaluated at time t.
+  #
+  # Input:
+  #   t         : time(s) at which to evaluate survival difference
+  #   ObsTime   : observed time-to-event or censoring times in the log scale
+  #   CovZ      : treatment indicator (1 = treated, 0 = control)
+  #   Cen_delta  : Censor indicator (0 = event, 1 = censored)
+  #   weights   : IPTW weight
+  #
+  # Output:
+  #   Numeric vector of S1(t) - S0(t)
 
 
-#################### Doubly weighted estimator for ACE  ########################################################
 DW_fun <- function(t, ObsTime, CovZ, Cen_delta, weights) {
   if (t == 0) return(0)
 
@@ -231,8 +268,27 @@ DW_fun(t=0.1, ObsTime=FinalData$Y, CovZ=FinalData$treatment, Cen_delta=1-FinalDa
 
 
 
-############ G-formula estimator for ACE ##################################################################
-
+########################################## G-formula estimator for ACE theta(t)  ##################################################################
+###################################################################################################################################################
+ # Purpose:
+  #   Compute the difference in survival curves
+  #   between treated (CovZ = 1) and control (CovZ = 0) groups,
+  #   and return the difference S1(t) - S0(t) evaluated at time t.
+  #
+  # Input:
+  #   t         : time(s) at which to evaluate survival difference
+  #   ObsTime   : observed time-to-event or censoring times in the log scale
+  #   Delta     : event indicator (1 = event, 0 = censored)
+  #   CovZ      : treatment indicator (1 = treated, 0 = control)
+  #   CovX      : covariates in the AFT model
+  #   est_beta0  : estimated intercept term in the AFT model
+  #   est_beta  : estimated beta related to covariates CovX in the AFT model
+  #   est_gamma : estimated gamma related to treatment CovZ
+  #   est_alpha:  estimated alpha related to covariates in the propensity score model
+  #   weights   : IPTW weight
+  #
+  # Output:
+  #   Numeric vector of S1(t) - S0(t)
 
 
 G_formula_fun<- function(t,ObsTime,Delta, CovZ,CovX,est_beta0, est_beta, est_gamma,est_alpha, weights) {
@@ -287,19 +343,31 @@ G_formula_fun<- function(t,ObsTime,Delta, CovZ,CovX,est_beta0, est_beta, est_gam
 }
 
 
-G_formula_fun(t=0.1,ObsTime=FinalData$Y,
-                                  Delta=FinalData$Censor,
-                                  CovZ=FinalData$treatment,
-                                  CovX=fit_out$CovX_aft,
-                                  est_beta0=Estimate_beta0(fit_out),
-                                  est_beta=fit_out$Beta,
-                                  est_gamma=fit_out$gamma,
-                                  est_alpha=fit_out$Alpha,
-                                  weights=fit_out$IPTW)
-
-######################## Doubly Robust Estimator for ACE #########################################################
 
 
+
+################################################## Doubly Robust Estimator for ACE theta(t) #####################################################################################################
+###########################################################################################################################################################################
+# Purpose:
+  #   Compute the difference in survival curves
+  #   between treated (CovZ = 1) and control (CovZ = 0) groups,
+  #   and return the difference S1(t) - S0(t) evaluated at time t.
+  #
+  # Input:
+  #   t         : time(s) at which to evaluate survival difference
+  #   ObsTime   : observed time-to-event or censoring times in the log scale
+  #   Delta     : event indicator (1 = event, 0 = censored)
+  #   CovZ      : treatment indicator (1 = treated, 0 = control)
+  #   CovX      : covariates in the AFT model
+  #   est_beta0  : estimated intercept term in the AFT model
+  #   est_beta  : estimated beta related to covariates CovX in the AFT model
+  #   est_gamma : estimated gamma related to treatment CovZ
+  #   est_alpha:  estimated alpha related to covariates in the propensity score model
+  #   est_ps    : estimated propensity score 
+  #   weights   : IPTW weight
+  #
+  # Output:
+  #   Numeric vector of S1(t) - S0(t)
 
 DR_fun <- function(t,
                       ObsTime,
@@ -387,17 +455,6 @@ return(DR_estimate)
 }
 
 
-
-DR_fun(t=0.5,ObsTime=FinalData$Y,
-                      Delta=FinalData$Censor,
-                      CovZ=FinalData$treatment,
-                      CovX=fit_out$CovX_aft,
-                      est_beta0=Estimate_beta0(fit_out),
-                      est_beta=fit_out$Beta,
-                      est_gamma=fit_out$gamma,
-                      est_alpha=fit_out$Alpha,
-                       est_ps=fit_out$Pr,
-                      weights=fit_out$IPTW) 
 
 
 

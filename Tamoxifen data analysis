@@ -231,7 +231,10 @@ create_two_panel_outputs (boot_out=FinalOutput,
 
 
 
-###### Boxplot for IPTW weight functions
+########################################################################### Plotting Figures ##########################################################################################################
+#######################################################################################################################################################################################################
+
+### Boxplot for IPTW weight functions
 
 Treatment=ifelse(fit_out$CovZ==1,"Tamoxifen","Control")
 Boxplot_data=data.frame(wt=fit_out$IPTW,trt=Treatment)
@@ -246,20 +249,6 @@ coord_cartesian(ylim = c(1,10))+  ylab("Weight")+scale_x_discrete(name ="Treatme
 
 plotdata<- data.frame(Time=c(target.time,target.time,target.time,target.time), Difference=c(FinalOutput$curves$bootstrap$DR$point,adjdiff$diff,FinalOutput$curves$bootstrap$DW$point,FinalOutput$curves$bootstrap$KM$point),Estimator=c(rep("DR",length(target.time)),rep("AKME",length(target.time)),rep("DW",length(target.time)),rep("KM",length(target.time))), lower =c(FinalOutput$curves$bootstrap$DR$ci_low,adjdiff$ci_lower,FinalOutput$curves$bootstrap$DW$ci_low,FinalOutput$curves$bootstrap$KM$ci_low) , upper =c(FinalOutput$curves$bootstrap$DR$ci_up,adjdiff$ci_upper,FinalOutput$curves$bootstrap$DW$ci_up,FinalOutput$curves$bootstrap$KM$ci_up))
 
-
-FinalOutput$curves$bootstrap$DR$point
-FinalOutput$curves$bootstrap$DR$ci_low
-FinalOutput$curves$bootstrap$DR$ci_up
-
-
-FinalOutput$curves$bootstrap$DW$point
-FinalOutput$curves$bootstrap$DW$ci_low
-FinalOutput$curves$bootstrap$DW$ci_up
-
-
-FinalOutput$curves$bootstrap$KM$point
-FinalOutput$curves$bootstrap$KM$ci_low
-FinalOutput$curves$bootstrap$KM$ci_up
 
 plot_causal_effects <- function(data,
                                 time_var = Time,

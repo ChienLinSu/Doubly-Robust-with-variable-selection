@@ -456,6 +456,310 @@ return(DR_estimate)
 
 
 
+###################################### Bootstrap function used to calculate the standard errors for all estimators ############################################################################################
+
+ # Input:
+  #  data      : dataset 
+  # covariates_logistic: covariate names in the dataset for the PS model (logistic regression model)
+  # covariates_aft     : covariate names in the dataset for the AFT model
+  # time_var:           : column name in the dataset for observed time in log scale
+  # delta_var           : column name in the dataset for the event indicator
+  # treat_var           : column name in the dataset for the treatment indicator
+  #  times              : times at which to compute estimators
+  # init_params         : initial values for parameters in the AFT model and Propensity score model
+  # B                   : number of bootstrap
+  # n_cores             : >1 to attempt parallel (mclapply; not on Windows)
+  # verbose             : If TRUE, the code will show progress updates during the bootstrap.
+  #
+
+
+bootstrap_pipeline <- function(data,
+                               covariates_logistic,
+                               covariates_aft,
+                               time_var,  ## column name for the ovserved time
+                               delta_var,
+                               treat_var,
+                               times,   # times at which to compute estimators
+                               init_params,  ## initial values for bootstrap
+                               B,
+                               seed,
+                               n_cores,   # >1 to attempt parallel (mclapply; not on Windows)
+                               verbose) {
+
+  set.seed(seed)
+  n <- nrow(data)
+
+  # Storage containers
+  p_aft <- length(covariates_aft)
+  p_log <- length(covariates_logistic)
+  n_param <- p_aft + 1 + (p_log + 1)  # Beta + gamma + (alpha0 + alpha)
+  
+  # matrix for parameters (par vector returned by optim)
+  par_store <- matrix(NA_real_, nrow = B, ncol = n_param)
+  colnames(par_store) <- paste0("p", seq_len(n_param))
+
+  # bootstrap storage for beta0
+  beta0_store <- rep(NA_real_, B)
+
+  # store estimator curves: rows = B, cols = length(times)
+  KM_store <- matrix(NA_real_, nrow = B, ncol = length(times))
+  DW_store <- matrix(NA_real_, nrow = B, ncol = length(times))
+  G_store  <- matrix(NA_real_, nrow = B, ncol = length(times))
+  DR_store <- matrix(NA_real_, nrow = B, ncol = length(times))
+
+  # function to run one bootstrap iteration
+  one_boot <- function(b) {
+    if (verbose && b %% 10 == 0) message("Bootstrap iter: ", b, "/", B) ##verbose = TRUE, the code will show progress updates during the bootstrap.
+    idx <- sample.int(n, replace = TRUE)
+    dat_b <- data[idx, , drop = FALSE]
+
+    # 1) fit via optim
+    opt_b <- tryCatch({
+      optim(par = init_params,
+            fn = Loss_fun_BJ_logistic_fast,
+            data = dat_b,
+            covariates_logistic = covariates_logistic,
+            covariates_aft = covariates_aft,
+            time_var = time_var,
+            delta_var = delta_var,
+            treat_var = treat_var,
+            return_components = FALSE)
+    }, error = function(e) e)
+
+    if (inherits(opt_b, "error")) {
+      return(list(success = FALSE))
+    }
+
+    # 2) extract components using return_components=TRUE
+    comps <- tryCatch({
+      Loss_fun_BJ_logistic_fast(x = opt_b$par,
+                                data = dat_b,
+                                covariates_logistic = covariates_logistic,
+                                covariates_aft = covariates_aft,
+                                time_var = time_var,
+                                delta_var = delta_var,
+                                treat_var = treat_var,
+                                return_components = TRUE)
+    }, error = function(e) e)
+
+    if (inherits(comps, "error")) return(list(success = FALSE))
+
+    # 3) compute beta0
+    beta0_b <- tryCatch({
+      Estimate_beta0(comps)
+    }, error = function(e) NA_real_)
+
+    # 4) compute estimators at all times (use data indices from dat_b)
+    # prepare inputs
+    ObsTime_b <- dat_b[[time_var]]
+    Delta_b   <- dat_b[[delta_var]]
+    CovZ_b    <- dat_b[[treat_var]]
+    if (is.factor(CovZ_b)) CovZ_b <- as.numeric(as.character(CovZ_b))
+    # CovX for AFT: from comps$CovX_aft which was computed using dat_b
+    CovX_aft_b <- comps$CovX_aft
+    # weights & propensity
+    IPTW_b <- comps$IPTW
+    Pr_b   <- comps$Pr
+
+    # compute estimators for each time
+    KM_vec <- sapply(times, function(tt) {
+      tryCatch({
+        KM_fun(t = tt, ObsTime = ObsTime_b, Delta = Delta_b, CovZ = CovZ_b, weights = NULL)
+      }, error = function(e) NA_real_)
+    })
+
+    DW_vec <- sapply(times, function(tt) {
+      tryCatch({
+        DW_fun(t = tt, ObsTime = ObsTime_b, CovZ = CovZ_b, Cen_delta = 1 - Delta_b, weights = IPTW_b)
+      }, error = function(e) NA_real_)
+    })
+
+    G_vec <- sapply(times, function(tt) {
+      tryCatch({
+        G_formula_fun(t = tt,
+                      ObsTime = ObsTime_b,
+                      Delta = Delta_b,
+                      CovZ = CovZ_b,
+                      CovX = CovX_aft_b,
+                      est_beta0 = beta0_b,
+                      est_beta = comps$Beta,
+                      est_gamma = comps$gamma,
+                      est_alpha = comps$Alpha,
+                      weights = IPTW_b)
+      }, error = function(e) NA_real_)
+    })
+
+    DR_vec <- sapply(times, function(tt) {
+      tryCatch({
+        DR_fun(t = tt,
+               ObsTime = ObsTime_b,
+               Delta = Delta_b,
+               CovZ = CovZ_b,
+               CovX = CovX_aft_b,
+               est_beta0 = beta0_b,
+               est_beta = comps$Beta,
+               est_gamma = comps$gamma,
+               est_alpha = comps$Alpha,
+               est_ps = Pr_b,
+               weights = IPTW_b)
+      }, error = function(e) NA_real_)
+    })
+
+    return(list(success = TRUE,
+                par = opt_b$par,
+                beta0 = beta0_b,
+                KM = KM_vec,
+                DW = DW_vec,
+                G = G_vec,
+                DR = DR_vec))
+  } # end one_boot
+
+  # Run bootstrap loop (parallel or serial)
+  if (n_cores > 1 && .Platform$OS.type != "windows") {
+    # use mclapply on Unix-like systems
+    res_list <- parallel::mclapply(seq_len(B), one_boot, mc.cores = n_cores)
+  } else {
+    res_list <- lapply(seq_len(B), one_boot)
+  }
+
+  # Collect results
+  success_idx <- which(sapply(res_list, function(x) is.list(x) && !is.null(x$success) && x$success))
+  n_success <- length(success_idx)
+  if (verbose) message("Bootstrap finished. Successful reps: ", n_success, "/", B)
+
+  if (n_success == 0) stop("All bootstrap replicates failed. Check convergence or increase iterations / change inits.")
+
+  for (i in seq_along(success_idx)) {
+    r <- res_list[[ success_idx[i] ]]
+    row <- success_idx[i]
+    par_store[row, seq_along(r$par)] <- r$par
+    beta0_store[row] <- r$beta0
+    KM_store[row, ] <- r$KM
+    DW_store[row, ] <- r$DW
+    G_store[row, ]  <- r$G
+    DR_store[row, ] <- r$DR
+  }
+
+  # Remove rows with all NA (failed reps)
+  valid_par_rows <- which(rowSums(is.na(par_store)) < ncol(par_store))
+  # Effective B
+  effB <- length(valid_par_rows)
+
+  # ---------- Summaries ----------
+  # 1) Fit original sample to get point estimates (if not already)
+  orig_fit <- optim(par = init_params,
+                    fn = Loss_fun_BJ_logistic_fast,
+                    data = data,
+                    covariates_logistic = covariates_logistic,
+                    covariates_aft = covariates_aft,
+                    time_var = time_var,
+                    delta_var = delta_var,
+                    treat_var = treat_var,
+                    return_components = FALSE)
+
+  orig_comps <- Loss_fun_BJ_logistic_fast(x = orig_fit$par, data = data,
+                                         covariates_logistic = covariates_logistic,
+                                         covariates_aft = covariates_aft,
+                                         time_var = time_var, delta_var = delta_var,
+                                         treat_var = treat_var, return_components = TRUE)
+  orig_beta0 <- Estimate_beta0(orig_comps)
+
+  # param point estimates
+  param_point <- orig_fit$par
+  # bootstrap param samples (only valid rows)
+  par_bs <- par_store[valid_par_rows, , drop = FALSE]
+  beta0_bs <- beta0_store[valid_par_rows]
+
+  # param summaries: mean, se (sd of bootstrap), 95% percentile CI, p-value (normal approx)
+  #param_mean <- apply(par_bs, 2, mean, na.rm = TRUE)
+  param_se   <- apply(par_bs, 2, sd, na.rm = TRUE)
+  param_ci_low <- param_point - 1.96 * param_se
+  param_ci_up  <- param_point + 1.96 * param_se
+
+
+  param_pval <- 2 * (1 - pnorm(abs(param_point / param_se)))
+
+  # beta0 summary
+  beta0_point <- orig_beta0
+  beta0_se <- sd(beta0_bs, na.rm = TRUE)
+  beta0_ci_low <- beta0_point - 1.96 * beta0_se
+  beta0_ci_up  <- beta0_point + 1.96 * beta0_se
+  beta0_pval <- 2 * (1 - pnorm(abs(beta0_point / beta0_se)))
+
+  # ---------- Estimator curves summaries ----------
+  # Keep only valid bootstrap rows
+  KM_bs <- KM_store[valid_par_rows, , drop = FALSE]
+  DW_bs <- DW_store[valid_par_rows, , drop = FALSE]
+  G_bs  <- G_store[valid_par_rows, , drop = FALSE]
+  DR_bs <- DR_store[valid_par_rows, , drop = FALSE]
+
+  # point estimates from original sample
+  ObsTime_orig <- data[[time_var]]
+  Delta_orig   <- data[[delta_var]]
+  CovZ_orig    <- data[[treat_var]]
+  if (is.factor(CovZ_orig)) CovZ_orig <- as.numeric(as.character(CovZ_orig))
+  CovX_aft_orig <- orig_comps$CovX_aft
+  IPTW_orig     <- orig_comps$IPTW
+  Pr_orig       <- orig_comps$Pr
+
+  KM_point <- sapply(times, function(tt) KM_fun(tt, ObsTime_orig, Delta_orig, CovZ_orig, weights = NULL))
+  DW_point <- sapply(times, function(tt) DW_fun(tt, ObsTime_orig, CovZ_orig, Cen_delta = 1 - Delta_orig, weights = IPTW_orig))
+  G_point  <- sapply(times, function(tt) G_formula_fun(tt, ObsTime_orig, Delta_orig, CovZ_orig, CovX_aft_orig,
+                                                      est_beta0 = orig_beta0, est_beta = orig_comps$Beta,
+                                                      est_gamma = orig_comps$gamma, est_alpha = orig_comps$Alpha,
+                                                      weights = IPTW_orig))
+  DR_point <- sapply(times, function(tt) DR_fun(tt, ObsTime_orig, Delta_orig, CovZ_orig, CovX_aft_orig,
+                                                 est_beta0 = orig_beta0, est_beta = orig_comps$Beta,
+                                                 est_gamma = orig_comps$gamma, est_alpha = orig_comps$Alpha,
+                                                 est_ps = Pr_orig, weights = IPTW_orig))
+
+  # compute bootstrap SD and percentile CI for curves
+
+
+   curve_summary <- function(bs_mat, point_est) {
+  # bs_mat : bootstrap matrix (B x n_times) for one estimator
+  # point_est : numeric vector (length n_times) of point estimates from original sample
+
+  if (ncol(bs_mat) != length(point_est)) {
+    stop("Dimension mismatch: bs_mat columns must equal length(point_est).")
+  }
+
+  se_est <- apply(bs_mat, 2, sd, na.rm = TRUE)
+
+  ci_low <- point_est - 1.96 * se_est
+  ci_up  <- point_est + 1.96 * se_est
+
+  list(point = point_est, se = se_est, ci_low = ci_low, ci_up = ci_up)
+}
+
+
+KM_sum <- curve_summary(KM_bs, KM_point)
+DW_sum <- curve_summary(DW_bs, DW_point)
+G_sum  <- curve_summary(G_bs,  G_point)
+DR_sum <- curve_summary(DR_bs, DR_point)
+
+
+  # assemble final output
+  results <- list(
+    call = list(times = times, B = B, seed = seed, n_cores = n_cores),
+    orig = list(fit = orig_fit, comps = orig_comps, beta0 = orig_beta0,
+                params = param_point),
+    params_boot = list(point = param_point, se = param_se, ci_low = param_ci_low, ci_up = param_ci_up, pval = param_pval),
+    beta0_boot = list( point = beta0_point, se = beta0_se, ci_low = beta0_ci_low, ci_up =beta0_ci_up, pval = beta0_pval),
+    curves = list(
+      times = times,
+      ##point = list(KM = KM_point, DW = DW_point, G = G_point, DR = DR_point),
+      bootstrap = list(KM = KM_sum, DW = DW_sum, G = G_sum, DR = DR_sum),
+      all_boot = list(KM = KM_bs, DW = DW_bs, G = G_bs, DR = DR_bs)
+    ),
+    meta = list(effective_B = effB, successes = success_idx)
+  )
+
+  return(results)
+}
+
+
+
 
 
 

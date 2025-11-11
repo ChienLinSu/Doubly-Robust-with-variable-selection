@@ -1,4 +1,410 @@
-## Here are the main R functions created and used for data analysis in this work
+######################################################### Below are the customized R codes used in this paper ##########################################################################
+
+
+
+######## Revised Adjusted Kaplan-Meier Estimator  #####
+
+revisedAKME=function (times, failures, variable, weights)
+{
+
+    if (sum(weights <= 0) > 0) {
+      print("Error weights must be superior to 0")
+    }
+    else {
+      if (sum(failures != 0 & failures != 1) > 0) {
+        print("Error failures must be a vector of 0 or 1")
+      }
+      else {
+        if (is.null(weights)) {
+          .w <- rep(1, length(times))
+        }
+        else {
+          .w <- weights
+        }
+        .data <- data.frame(t = times, f = failures,
+                            v = variable, w = .w)
+        .data <- .data[!is.na(.data$v), ]
+        Table <- data.frame(times = NULL, n.risk = NULL,
+                            n.event = NULL, survival = NULL, variable = NULL)
+        for (i in unique(variable)) {
+          .d <- .data[.data$v == i, ]
+          .tj <- c(-9999, sort(unique(.d$t[.d$f == 1])))
+          .dj <- sapply(.tj, function(x) {
+            sum(.d$w[.d$t == x & .d$f == 1])
+          })
+          .nj <- sapply(.tj, function(x) {
+            sum(.d$w[.d$t >= x])
+          })
+          .st <- cumprod((.nj - .dj)/.nj)
+          Table <- rbind(Table, data.frame(times = .tj,
+                                           n.risk = .nj, n.event = .dj, survival = .st,
+                                           variable = i))
+        }
+        return(Table)
+      }
+    }
+ 
+}
+
+##### Link function for Propensity Score (logistic regression model) #####
+G.link=function(u){
+output=ifelse(u>=0,1/(1 + exp(-u)),exp(u)/(1 + exp(u)))
+return(output)
+}
+
+
+
+
+
+ ##### Function to calculate the conditional mean used for imputation  #######
+calculate_conditional_mean <- function(r, error_t, jump, survival_fun) {
+  # locate t_j >= r
+  loc <- which(error_t >= r)
+  if (length(loc) == 0) return(0)
+  A <- sum(error_t[loc] * jump[loc])
+  B <- survival_fun(r)                # S(r)
+  if (is.na(B) || B <= 0) return(0)
+  return(A / B)
+}
+
+##### Imputation function for imputing the censored log survival time #######
+impute_survival_times <- function(obs_time, delta, cov_z, cov_x, old_beta, old_gamma, res_akm) {
+  N_size <- length(obs_time)
+  XB <- as.vector(cov_x %*% old_beta)     # XB_i = sum(Beta * X_i)
+  imputed_time <- numeric(N_size)
+
+  # Residuals (for threshold comparisons)
+  # For treated, residual = obs - XB - gamma; for control res = obs - XB
+  res_all <- obs_time - XB - old_gamma * cov_z
+
+  # Extract times and survival by variable
+  times1 <- res_akm$times[res_akm$variable == 1]
+  S1     <- res_akm$survival[res_akm$variable == 1]
+
+  times0 <- res_akm$times[res_akm$variable == 0]
+  S0     <- res_akm$survival[res_akm$variable == 0]
+
+  # Recreate the CDF-based jumps exactly like original:
+  CDF1 <- 1 - S1
+  if (length(CDF1) >= 1) Jump1 <- c(CDF1[1], diff(CDF1)) else Jump1 <- numeric(0)
+
+  CDF0 <- 1 - S0
+  if (length(CDF0) >= 1) Jump0 <- c(CDF0[1], diff(CDF0)) else Jump0 <- numeric(0)
+
+  # Create survival step functions the same way you originally did:
+  # stepfun(times, c(1, S))  (default right = TRUE)
+  survival_1 <- stepfun(times1, c(1, S1))
+  survival_0 <- stepfun(times0, c(1, S0))
+
+  # Case 1: uncensored => observed time
+  imputed_time[delta == 1] <- obs_time[delta == 1]
+
+  # Case 2: censored & treated (Z==1)
+  idx_cens1 <- which(delta == 0 & cov_z == 1)
+  if (length(idx_cens1) > 0 && length(times1) > 0) {
+    # compute EE for each r = residual for treated subjects
+    r_vals <- res_all[idx_cens1]   # these are obs - XB - gamma for Z=1
+    EE1 <- vapply(r_vals, FUN.VALUE = numeric(1), FUN = function(r) {
+      calculate_conditional_mean(r, error_t = times1, jump = Jump1, survival_fun = survival_1)
+    })
+    imputed_time[idx_cens1] <- XB[idx_cens1] + old_gamma + EE1
+  } else if (length(idx_cens1) > 0) {
+    # no mass in treated KM => EE = 0, impute XB + gamma
+    imputed_time[idx_cens1] <- XB[idx_cens1] + old_gamma
+  }
+
+  # Case 3: censored & control (Z==0)
+  idx_cens0 <- which(delta == 0 & cov_z == 0)
+  if (length(idx_cens0) > 0 && length(times0) > 0) {
+    r_vals0 <- obs_time[idx_cens0] - XB[idx_cens0]   # obs - XB for controls
+    EE0 <- vapply(r_vals0, FUN.VALUE = numeric(1), FUN = function(r) {
+      calculate_conditional_mean(r, error_t = times0, jump = Jump0, survival_fun = survival_0)
+    })
+    imputed_time[idx_cens0] <- XB[idx_cens0] + EE0
+  } else if (length(idx_cens0) > 0) {
+    imputed_time[idx_cens0] <- XB[idx_cens0]
+  }
+
+  return(imputed_time)
+}
+
+
+
+
+########################## KM estimate for ACE theta(t) ##############################################
+
+
+KM_fun<- function(t, ObsTime, Delta, CovZ, weights = NULL) {
+  # ---------------------------------------------------------------
+  # Purpose:
+  #   Compute the difference in Kaplan–Meier survival curves
+  #   between treated (CovZ = 1) and control (CovZ = 0) groups,
+  #   and return the difference S1(t) - S0(t) evaluated at time t.
+  #
+  # Input:
+  #   t         : time(s) at which to evaluate survival difference
+  #   ObsTime   : observed time-to-event or censoring times
+  #   Delta     : event indicator (1 = event, 0 = censored)
+  #   CovZ      : treatment indicator (1 = treated, 0 = control)
+  #   weights   : optional vector of observation weights
+  #
+  # Output:
+  #   Numeric vector of S1(t) - S0(t)
+  # ---------------------------------------------------------------
+
+  # --- check input lengths ---
+  if (length(ObsTime) != length(Delta) || length(ObsTime) != length(CovZ)) {
+    stop("ObsTime, Delta, and CovZ must have the same length.")
+  }
+
+  # --- call revisedAKME() to compute KM estimates ---
+  Kaplan <- revisedAKME(times = ObsTime, failures = Delta,
+                        variable = CovZ, weights = weights)
+
+  # --- Build KM step functions for each group ---
+  KM_1 <- stepfun(
+    Kaplan$times[Kaplan$variable == 1],
+    c(1, Kaplan$survival[Kaplan$variable == 1])
+  )
+
+  KM_0 <- stepfun(
+    Kaplan$times[Kaplan$variable == 0],
+    c(1, Kaplan$survival[Kaplan$variable == 0])
+  )
+
+  # --- Evaluate survival difference S1(t) - S0(t) ---
+  diff_surv <- KM_1(log(t)) - KM_0(log(t))
+
+  return(diff_surv)
+}
+
+KM_fun(t=0.1,ObsTime=FinalData$Y,Delta=FinalData$Censor, CovZ=FinalData$treatment, weights = NULL)
+
+
+
+
+
+#################### Doubly weighted estimator for ACE  ########################################################
+DW_fun <- function(t, ObsTime, CovZ, Cen_delta, weights) {
+  if (t == 0) return(0)
+
+  # KM for censoring process
+  res.akm_Censor <- revisedAKME(
+    times = ObsTime,
+    failures = Cen_delta,
+    variable = CovZ,
+    weights = weights
+  )
+
+  # Build step functions
+  Cen_survival_1 <- stepfun(
+    res.akm_Censor$times[res.akm_Censor$variable == 1],
+    c(1, res.akm_Censor$survival[res.akm_Censor$variable == 1])
+  )
+  Cen_survival_0 <- stepfun(
+    res.akm_Censor$times[res.akm_Censor$variable == 0],
+    c(1, res.akm_Censor$survival[res.akm_Censor$variable == 0])
+  )
+
+  # Evaluate at log(t)
+  Q1 <- Cen_survival_1(ObsTime)
+  Q0 <- Cen_survival_0(ObsTime)
+
+  # Avoid division by zero
+ MinQ1=ifelse(min(Q1)==0,min(Q1[-which(Q1==0)]),min(Q1))
+
+ MinQ0=ifelse(min(Q0)==0,min(Q0[-which(Q0==0)]),min(Q0))
+
+  a1 <- ifelse(Cen_survival_1(log(t)) == 0, MinQ1, Cen_survival_1(log(t)))
+  a0 <- ifelse(Cen_survival_0(log(t)) == 0, MinQ0, Cen_survival_0(log(t)))
+
+  # DW estimator
+  term1 <- mean(CovZ * weights * (ObsTime > log(t)) / a1)
+  term0 <- mean((1 - CovZ) * weights * (ObsTime > log(t)) / a0)
+
+  return(term1 - term0)
+}
+
+DW_fun(t=0.1, ObsTime=FinalData$Y, CovZ=FinalData$treatment, Cen_delta=1-FinalData$Censor, weights=fit_out$IPTW) 
+
+
+
+
+
+############ G-formula estimator for ACE ##################################################################
+
+
+
+G_formula_fun<- function(t,ObsTime,Delta, CovZ,CovX,est_beta0, est_beta, est_gamma,est_alpha, weights) {
+
+  ## ---------------------------
+  ## 1. Compute residuals
+  ## ---------------------------
+  residuals <- ObsTime -
+    est_beta0 -
+    as.vector(est_beta %*% t(CovX)) -
+    est_gamma * CovZ
+
+
+
+  ## ---------------------------
+  ## 2. Weighted KM on residuals
+  ## ---------------------------
+  km_res <- revisedAKME(
+    times = residuals,
+    failures = Delta,
+    variable = CovZ,
+    weights = weights
+  )
+
+  ## Build step functions S1(r), S0(r)
+  S1 <- stepfun(
+    km_res$times[km_res$variable == 1],
+    c(1, km_res$survival[km_res$variable == 1])
+  )
+
+  S0 <- stepfun(
+    km_res$times[km_res$variable == 0],
+    c(1, km_res$survival[km_res$variable == 0])
+  )
+
+  ## ----------------------------------
+  ## 3. G-formula estimation: E[S1(k1) - S0(k2)]
+  ## ----------------------------------
+  if (t <= 0) return(0)
+
+  k1 <- log(t) - est_beta0 -
+        as.vector(est_beta %*% t(CovX)) -
+        est_gamma
+
+  k2 <- log(t) - est_beta0 -
+        as.vector(est_beta %*% t(CovX))
+
+  ## Evaluate survival difference
+  g_val <- mean(S1(k1) - S0(k2))
+
+  return(g_val)
+}
+
+
+G_formula_fun(t=0.1,ObsTime=FinalData$Y,
+                                  Delta=FinalData$Censor,
+                                  CovZ=FinalData$treatment,
+                                  CovX=fit_out$CovX_aft,
+                                  est_beta0=Estimate_beta0(fit_out),
+                                  est_beta=fit_out$Beta,
+                                  est_gamma=fit_out$gamma,
+                                  est_alpha=fit_out$Alpha,
+                                  weights=fit_out$IPTW)
+
+######################## Doubly Robust Estimator for ACE #########################################################
+
+
+
+DR_fun <- function(t,
+                      ObsTime,
+                      Delta,
+                      CovZ,
+                      CovX,
+                      est_beta0,
+                      est_beta,
+                      est_gamma,
+                      est_alpha,
+                       est_ps,
+                      weights) {
+
+
+ if (t <= 0) return(DR_estimate = 0)
+Cen_delta=1-Delta
+
+ # KM for censoring process
+  res.akm_Censor <- revisedAKME(
+    times = ObsTime,
+    failures = Cen_delta,
+    variable = CovZ,
+    weights = weights
+  )
+
+  # Build step functions
+  Cen_survival_1 <- stepfun(
+    res.akm_Censor$times[res.akm_Censor$variable == 1],
+    c(1, res.akm_Censor$survival[res.akm_Censor$variable == 1])
+  )
+  Cen_survival_0 <- stepfun(
+    res.akm_Censor$times[res.akm_Censor$variable == 0],
+    c(1, res.akm_Censor$survival[res.akm_Censor$variable == 0])
+  )
+
+
+
+ # Evaluate at log(t)
+  Q1 <- Cen_survival_1(ObsTime)
+  Q0 <- Cen_survival_0(ObsTime)
+
+  # Avoid division by zero
+ MinQ1=ifelse(min(Q1)==0,min(Q1[-which(Q1==0)]),min(Q1))
+
+ MinQ0=ifelse(min(Q0)==0,min(Q0[-which(Q0==0)]),min(Q0))
+
+
+a1=ifelse(Cen_survival_1(log(t))==0,MinQ1,Cen_survival_1(log(t)))
+a0=ifelse(Cen_survival_0(log(t))==0,MinQ0,Cen_survival_0(log(t)))
+
+ ## ---------------------------
+  ## Compute residuals
+  ## ---------------------------
+  residuals <- ObsTime-est_beta0-as.vector(est_beta %*% t(CovX))-est_gamma * CovZ
+
+km_res <- revisedAKME(
+    times = residuals,
+    failures = Delta,
+    variable = CovZ,
+    weights = weights
+  )
+
+  ## Build step functions S1(r), S0(r)
+  S1 <- stepfun(
+    km_res$times[km_res$variable == 1],
+    c(1, km_res$survival[km_res$variable == 1])
+  )
+
+  S0 <- stepfun(
+    km_res$times[km_res$variable == 0],
+    c(1, km_res$survival[km_res$variable == 0])
+  )
+
+
+comp1=(CovZ*weights*(ObsTime>log(t)))*(1/a1) ## done
+comp2=(((CovZ-est_ps)*CovZ*Cen_delta*(ObsTime>log(t)))/(a1*est_ps))*S1(log(t)-est_beta0-as.vector(est_beta%*%t(CovX))-est_gamma)
+comp3=(1-CovZ)*weights*(ObsTime>log(t))*(1/a0)
+comp4=(((est_ps-CovZ)*(1-CovZ)*Cen_delta*(ObsTime>log(t)))/(a0*(1-est_ps)))*S0(log(t)-est_beta0-as.vector(est_beta%*%t(CovX)))
+
+DR_estimate=mean((comp1-comp2)-(comp3-comp4))
+
+return(DR_estimate)
+
+
+}
+
+
+
+DR_fun(t=0.5,ObsTime=FinalData$Y,
+                      Delta=FinalData$Censor,
+                      CovZ=FinalData$treatment,
+                      CovX=fit_out$CovX_aft,
+                      est_beta0=Estimate_beta0(fit_out),
+                      est_beta=fit_out$Beta,
+                      est_gamma=fit_out$gamma,
+                      est_alpha=fit_out$Alpha,
+                       est_ps=fit_out$Pr,
+                      weights=fit_out$IPTW) 
+
+
+
+
+
+
+
 
 
 

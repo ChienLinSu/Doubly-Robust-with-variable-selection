@@ -471,7 +471,7 @@ return(DR_estimate)
   # B                   : number of bootstrap
   # n_cores             : >1 to attempt parallel (mclapply; not on Windows)
   # verbose             : If TRUE, the code will show progress updates during the bootstrap.
-  #
+  
 
 
 bootstrap_pipeline <- function(data,
@@ -760,9 +760,103 @@ DR_sum <- curve_summary(DR_bs, DR_point)
 }
 
 
+##########################  The function is to populate the fitted results for the AFT model and Propensity Score model
+######################################################################################################################################################################################################
+
+ # Input:
+  #  boot_out     : the fitted results from the bootstrap
+  # covariates_aft     : covariate names in the dataset for the AFT model
+  # covariates_logistic: covariate names in the dataset for the PS model (logistic regression model)
 
 
+create_two_panel_outputs <- function(boot_out,
+                                     covariates_aft,
+                                     covariates_logistic) {
 
+  # ==========================================================
+  # Extract AFT-related parameters (beta0, beta, gamma)
+  # ==========================================================
+  # beta0
+  beta0_point <- boot_out$beta0_boot$point
+  beta0_se    <- boot_out$beta0_boot$se
+  beta0_ci_l  <- boot_out$beta0_boot$ci_low
+  beta0_ci_u  <- boot_out$beta0_boot$ci_up
+  beta0_pval  <- boot_out$beta0_boot$pval
+
+  # beta, gamma, alpha are stored together in params_boot
+  param_point <- boot_out$params_boot$point
+  param_se    <- boot_out$params_boot$se
+  param_ci_l  <- boot_out$params_boot$ci_low
+  param_ci_u  <- boot_out$params_boot$ci_up
+  param_pval  <- boot_out$params_boot$pval
+
+  # Structure of params_boot:
+  #   [Beta (AFT)] + [Gamma (AFT)] + [Alpha (logistic)]
+
+  n_beta  <- length(covariates_aft)
+  n_alpha <- length(covariates_logistic) + 1   # logistic intercept + covariates
+
+  # Indices
+  beta_idx  <- 1:n_beta
+  gamma_idx <- n_beta + 1
+  alpha_idx <- (n_beta + 2):(n_beta + 1 + n_alpha)
+
+  # ==========================================================
+  # Panel A — AFT model output
+  # ==========================================================
+  aft_names <- c("Intercept_AFT", covariates_aft, "treatment")
+
+  aft_estimates <- c(beta0_point,
+                     param_point[beta_idx],
+                     param_point[gamma_idx])
+
+  aft_se  <- c(beta0_se,
+               param_se[beta_idx],
+               param_se[gamma_idx])
+
+  aft_ci_l <- c(beta0_ci_l,
+                param_ci_l[beta_idx],
+                param_ci_l[gamma_idx])
+
+  aft_ci_u <- c(beta0_ci_u,
+                param_ci_u[beta_idx],
+                param_ci_u[gamma_idx])
+
+  aft_pval <- c(beta0_pval,
+                param_pval[beta_idx],
+                param_pval[gamma_idx])
+
+  PanelA_AFT <- data.frame(
+    Parameter = aft_names,
+    Estimate  = aft_estimates,
+    StdError  = aft_se,
+    CI_lower  = aft_ci_l,
+    CI_upper  = aft_ci_u,
+    p_value   = aft_pval,
+    row.names = NULL
+  )
+
+  # ==========================================================
+  # Panel B — Logistic regression output
+  # ==========================================================
+  log_names <- c("Intercept_PS", covariates_logistic)
+
+  PanelB_Logistic <- data.frame(
+    Parameter = log_names,
+    Estimate  = param_point[alpha_idx],
+    StdError  = param_se[alpha_idx],
+    CI_lower  = param_ci_l[alpha_idx],
+    CI_upper  = param_ci_u[alpha_idx],
+    p_value   = param_pval[alpha_idx],
+    row.names = NULL
+  )
+
+  # Return two-panel output
+  return(list(
+    PanelA_AFT = PanelA_AFT,
+    PanelB_Logistic = PanelB_Logistic
+  ))
+}
 
 
 

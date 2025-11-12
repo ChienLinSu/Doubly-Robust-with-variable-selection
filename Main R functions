@@ -106,14 +106,13 @@ impute_survival_times <- function(obs_time, delta, cov_z, cov_x, old_beta, old_g
   times0 <- res_akm$times[res_akm$variable == 0]
   S0     <- res_akm$survival[res_akm$variable == 0]
 
-  # Recreate the CDF-based jumps exactly like original:
   CDF1 <- 1 - S1
   if (length(CDF1) >= 1) Jump1 <- c(CDF1[1], diff(CDF1)) else Jump1 <- numeric(0)
 
   CDF0 <- 1 - S0
   if (length(CDF0) >= 1) Jump0 <- c(CDF0[1], diff(CDF0)) else Jump0 <- numeric(0)
 
-  # Create survival step functions the same way you originally did:
+  # Create survival step functions 
   # stepfun(times, c(1, S))  (default right = TRUE)
   survival_1 <- stepfun(times1, c(1, S1))
   survival_0 <- stepfun(times0, c(1, S0))
@@ -325,7 +324,7 @@ G_formula_fun<- function(t,ObsTime,Delta, CovZ,CovX,est_beta0, est_beta, est_gam
   )
 
   ## ----------------------------------
-  ## 3. G-formula estimation: E[S1(k1) - S0(k2)]
+  ## 3. G-formula estimation: 
   ## ----------------------------------
   if (t <= 0) return(0)
 

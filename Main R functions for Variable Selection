@@ -1,1 +1,778 @@
+###################  The main R functions used for variable selection under the proposed model are presented below    ##################################################
+
+
+### Adjusted Kaplan-Meier Estimator 
+
+revisedAKME=function (times, failures, variable, weights)
+{
+
+    if (sum(weights <= 0) > 0) {
+      print("Error weights must be superior to 0")
+    }
+    else {
+      if (sum(failures != 0 & failures != 1) > 0) {
+        print("Error failures must be a vector of 0 or 1")
+      }
+      else {
+        if (is.null(weights)) {
+          .w <- rep(1, length(times))
+        }
+        else {
+          .w <- weights
+        }
+        .data <- data.frame(t = times, f = failures,
+                            v = variable, w = .w)
+        .data <- .data[!is.na(.data$v), ]
+        Table <- data.frame(times = NULL, n.risk = NULL,
+                            n.event = NULL, survival = NULL, variable = NULL)
+        for (i in unique(variable)) {
+          .d <- .data[.data$v == i, ]
+          .tj <- c(-9999, sort(unique(.d$t[.d$f == 1])))
+          .dj <- sapply(.tj, function(x) {
+            sum(.d$w[.d$t == x & .d$f == 1])
+          })
+          .nj <- sapply(.tj, function(x) {
+            sum(.d$w[.d$t >= x])
+          })
+          .st <- cumprod((.nj - .dj)/.nj)
+          Table <- rbind(Table, data.frame(times = .tj,
+                                           n.risk = .nj, n.event = .dj, survival = .st,
+                                           variable = i))
+        }
+        return(Table)
+      }
+    }
+ 
+}
+
+
+
+
+calculate_conditional_mean <- function(r, error_t, jump, survival_fun) {
+  # locate t_j >= r
+  loc <- which(error_t >= r)
+  if (length(loc) == 0) return(0)
+  A <- sum(error_t[loc] * jump[loc])
+  B <- survival_fun(r)                # S(r)
+  if (is.na(B) || B <= 0) return(0)
+  return(A / B)
+}
+
+
+
+
+
+impute_survival_times <- function(obs_time, delta, cov_z, cov_x, old_beta, old_gamma, res_akm) {
+  N_size <- length(obs_time)
+  XB <- as.vector(cov_x %*% old_beta)     # XB_i = sum(Beta * X_i)
+  imputed_time <- numeric(N_size)
+
+  # Residuals (for threshold comparisons)
+  # For treated, residual = obs - XB - gamma; for control res = obs - XB
+  res_all <- obs_time - XB - old_gamma * cov_z
+
+  # Extract times and survival by variable
+  times1 <- res_akm$times[res_akm$variable == 1]
+  S1     <- res_akm$survival[res_akm$variable == 1]
+
+  times0 <- res_akm$times[res_akm$variable == 0]
+  S0     <- res_akm$survival[res_akm$variable == 0]
+
+  # Recreate the CDF-based jumps exactly like original:
+  CDF1 <- 1 - S1
+  if (length(CDF1) >= 1) Jump1 <- c(CDF1[1], diff(CDF1)) else Jump1 <- numeric(0)
+
+  CDF0 <- 1 - S0
+  if (length(CDF0) >= 1) Jump0 <- c(CDF0[1], diff(CDF0)) else Jump0 <- numeric(0)
+
+  # Create survival step functions the same way you originally did:
+  # stepfun(times, c(1, S))  (default right = TRUE)
+  survival_1 <- stepfun(times1, c(1, S1))
+  survival_0 <- stepfun(times0, c(1, S0))
+
+  # Case 1: uncensored => observed time
+  imputed_time[delta == 1] <- obs_time[delta == 1]
+
+  # Case 2: censored & treated (Z==1)
+  idx_cens1 <- which(delta == 0 & cov_z == 1)
+  if (length(idx_cens1) > 0 && length(times1) > 0) {
+    # compute EE for each r = residual for treated subjects
+    r_vals <- res_all[idx_cens1]   # these are obs - XB - gamma for Z=1
+    EE1 <- vapply(r_vals, FUN.VALUE = numeric(1), FUN = function(r) {
+      calculate_conditional_mean(r, error_t = times1, jump = Jump1, survival_fun = survival_1)
+    })
+    imputed_time[idx_cens1] <- XB[idx_cens1] + old_gamma + EE1
+  } else if (length(idx_cens1) > 0) {
+    # no mass in treated KM => EE = 0, impute XB + gamma
+    imputed_time[idx_cens1] <- XB[idx_cens1] + old_gamma
+  }
+
+  # Case 3: censored & control (Z==0)
+  idx_cens0 <- which(delta == 0 & cov_z == 0)
+  if (length(idx_cens0) > 0 && length(times0) > 0) {
+    r_vals0 <- obs_time[idx_cens0] - XB[idx_cens0]   # obs - XB for controls
+    EE0 <- vapply(r_vals0, FUN.VALUE = numeric(1), FUN = function(r) {
+      calculate_conditional_mean(r, error_t = times0, jump = Jump0, survival_fun = survival_0)
+    })
+    imputed_time[idx_cens0] <- XB[idx_cens0] + EE0
+  } else if (length(idx_cens0) > 0) {
+    imputed_time[idx_cens0] <- XB[idx_cens0]
+  }
+
+  return(imputed_time)
+}
+
+
+
+
+
+
+
+
+
+G.link=function(u){
+output=ifelse(u>=0,1/(1 + exp(-u)),exp(u)/(1 + exp(u)))
+return(output)
+}
+
+
+
+deri.G.link=function(u){
+exp(u)/((1+exp(u))^2)
+}
+
+
+
+
+ar1_cor <- function(n, rho) {
+exponent <- abs(matrix(1:n - 1, nrow = n, ncol = n, byrow = TRUE) - 
+    (1:n - 1))
+rho^exponent
+}
+
+
+
+
+
+### Create Lambda sequence
+
+Lambda.sequence=function(data,L,v_weight){  ## data:dataset; L: number of sequence for Lambda; v_weight is the weight for penalty: if SGL, v_weight=1; if ASGL: v_weight is derived based on the regularized coefficient using SGL
+
+
+ObsTime=data[,2]
+Delta=data[,3]
+CovZ=data[,4]
+n=dim(data)[1]
+CovX=as.matrix(data[,5:dim(data)[2]])
+
+
+p_beta=1+length(5:dim(data)[2]) ## number of covariates+1 (intercept term)
+X_bar=matrix(rep(apply(CovX,2,mean),n),n,p_beta-1,byrow=TRUE) 
+
+
+## first estimate alpha_0 and gamma
+
+BJ_logistic_Lambda=function(x){
+
+gamma=x[1]
+alpha_0=x[2]
+
+Pr=exp(alpha_0)/(1+exp(alpha_0))
+W<- (CovZ==1) * (1/Pr) + (CovZ==0) * (1)/(1-Pr)
+error_time=ObsTime-gamma*CovZ
+
+res.akm <- revisedAKME(times=error_time, failures=Delta,variable=CovZ, weights=W)
+imputed_time = impute_survival_times(ObsTime, Delta, CovZ, CovX, old_beta=rep(0,dim(CovX)[2]), old_gamma=gamma, res.akm)
+Z_bar=mean(CovZ)
+Obstime_bar=mean(imputed_time)
+new_Z=(CovZ-Z_bar)
+new_Obstime=(imputed_time-Obstime_bar)
+
+component1=0.5*((new_Obstime-gamma*new_Z)^2)
+component2=(CovZ*log(G.link(alpha_0)))+((1-CovZ)*log(1-G.link(alpha_0)))
+
+return((1/n)*(sum(component1)-sum(component2)))
+}## for function
+
+
+BJ_logistic_Alphagamma=optim(c(0.1, 0.1),BJ_logistic_Lambda)
+
+
+
+
+############################# Calculate the lambda maximum ###################################
+# Precompute terms that don't depend on `j`
+
+##alpha <- BJ_logistic_Alphagamma$par[1]
+eta <- BJ_logistic_Alphagamma$par[2]
+Pr <- 1 / (1 + exp(-eta))  # Logistic probability
+G_eta <- G.link(eta)
+dG_eta <- deri.G.link(eta)
+
+# comp1 part vectorized for all j at once
+term1 <- CovZ * (dG_eta / G_eta)
+term2 <- (1 - CovZ) * (dG_eta / (1 - G_eta))
+score_contribution <- (-1/n) * t(CovX) %*% (term1 - term2)  # Matrix mult for all j
+
+W<- (CovZ==1) * (1/Pr) + (CovZ==0) * (1)/(1-Pr)
+error_time=ObsTime-BJ_logistic_Alphagamma$par[1]*CovZ
+res.akm <- revisedAKME(times=error_time, failures=Delta,variable=CovZ, weights=W)
+imputed_time = impute_survival_times(ObsTime, Delta, CovZ, CovX, old_beta=rep(0,dim(CovX)[2]), old_gamma=BJ_logistic_Alphagamma$par[1], res.akm)
+   
+
+Z_bar=mean(CovZ)
+Obstime_bar=mean(imputed_time)
+Z_centered=(CovZ-Z_bar)
+T_centered =(imputed_time-Obstime_bar)
+center_X=CovX-X_bar
+
+# comp2: vectorized for all j
+residual_term <- (T_centered - BJ_logistic_Alphagamma$par[1] * Z_centered)
+score2 <- 1/n * t(center_X) %*% (-residual_term)
+
+# Combine into BJ.logistic.lambda
+BJ.logistic.lambda <- rbind(as.vector(score_contribution), as.vector(score2))
+
+Lambda3_max=max(n*v_weight^{-1}*apply(abs(BJ.logistic.lambda),2,sum))
+Lambda3_min=0.001*Lambda3_max
+
+seq.Lambda3=Lambda3_max*(Lambda3_min/Lambda3_max)^{(c(1:L)-1)/(L-1)}
+return(seq.Lambda3)
+}
+
+
+
+
+
+
+
+ASGL_VS_function=function(data,LambdaSeq,KappaSeq,InitialAlpha, InitialBeta, InitialGamma, v_weight,K){  ##no intercept term for InitialBeta (parameters related to AFT)
+                                                                                                         ## initial value for alpha 0 is required in InitialAlpha (parameters related to logistic regression model)
+                                                                                                         ## InitialGamma: parameter related to treatment
+                                                                                                         ##K:number of cross validation
+                                                                                                         ##v_weight: the weight vector for ASGL
+                                                                                                         ##K: number of cross validation
+
+
+ # ----------------------------------------
+ # INITIAL SETUP & PRE-CALCULATIONS
+ # ----------------------------------------
+    
+    # Data extraction and dimensions
+
+CovX=as.matrix(data[,5:dim(data)[2]])
+CovZ=data[,4]
+ObsTime=data[,2]
+Delta=data[,3]
+n=dim(data)[1]
+
+group_number=dim_covariate=dim(CovX)[2]
+
+dim.total=length(c(InitialAlpha,InitialBeta,InitialGamma))
+
+
+ # Centering (done once)
+Z_bar=mean(CovZ)
+center_Z=CovZ-Z_bar
+center_X=sweep(CovX, 2, colMeans(CovX), FUN = "-") 
+
+# Matrix for results
+Final.matrix.BJ.adaptive=matrix(0,length(LambdaSeq)*length(KappaSeq),3+2+(2*dim(CovX)[2])) ##2: alpha0 and gamma; 3: lambda, kappa, and CV
+
+
+ # Cross-validation setup
+quantity=c(rep(round(n/K),K-1),n-(sum(rep(round(n/K),K-1))))   ## 5 is 5-fold cv, quantity can be a vector in case the number in each split dataset is not equal
+
+
+# Design matrices (done once)
+   
+   X_alpha <- cbind(1, CovX)  # (n x (p+1))# Create design matrix for alpha
+ 
+   X_beta_gamma <- t(cbind(-center_X, -center_Z))  # (n x (p+1))# Common component for beta and gamma
+
+
+CV.sd=c()
+row=1
+
+
+  
+for(k in 1:length(LambdaSeq)){
+for(q in 1:length(KappaSeq)){
+
+lambda3=LambdaSeq[k]
+lambda4=KappaSeq[q] 
+iterative=0
+
+##initial value
+
+old_alpha=InitialAlpha
+old_beta=InitialBeta
+old_gamma=InitialGamma
+
+
+
+repeat { # Major loop for convergence
+
+
+###### Calculate failure time T with imputation ###### 
+old.Phy=matrix(c(old_alpha[-1],old_beta),group_number,2,byrow=FALSE)
+Pi=cbind(1,CovX)%*%(as.matrix(old_alpha,length(old_alpha),1))
+Pr=exp(Pi)/(1+exp(Pi))
+W<- (CovZ==1) * (1/Pr) + (CovZ==0) * (1)/(1-Pr)
+error_time=ObsTime-as.vector(old_beta%*%t(CovX))-old_gamma*CovZ
+res.akm <- revisedAKME(times=error_time, failures=Delta,variable=CovZ, weights=W)
+
+imputed_time = impute_survival_times(ObsTime, Delta, CovZ, CovX, old_beta, old_gamma, res.akm)
+Center_time=imputed_time-mean(imputed_time)
+
+
+## calculate the derivative for all parameters
+
+# Compute derivative.alpha
+g_link_pi <- G.link(Pi)
+deriv_g_link_pi <- deri.G.link(Pi)
+
+
+# Logical index for CovZ == 1
+idx1 <- CovZ == 1
+
+
+# Vectorized coefficient for alpha
+                alpha_coeff = numeric(n)
+                alpha_coeff[idx1] = (-1) * (deriv_g_link_pi[idx1] / g_link_pi[idx1])
+                alpha_coeff[!idx1] = (1) * (deriv_g_link_pi[!idx1] / (1 - g_link_pi[!idx1]))
+                
+                deriv_alpha = (1 / n) * colSums(alpha_coeff * X_alpha)
+
+# Derivative.beta and gamma
+
+resid_term <- Center_time - as.vector(center_X%*% old_beta) - old_gamma * center_Z # Compute residual terms (n-length vector)
+deriv_beta_gamma_mat <- matrix(0, nrow =dim_covariate + 1 , ncol =n )
+deriv_beta_gamma_mat <-sweep(X_beta_gamma, 2, (1/n) * resid_term, FUN = "*") ## sweep is used so that each element of the vector times each column of the matric
+
+
+# Final result
+Total.derivative.Phy.BJ <- rbind(
+  matrix(deriv_alpha),
+  matrix(as.vector(rowSums(deriv_beta_gamma_mat)))
+)
+
+
+# --- Step: Backtracking Line Search (Inner Loop) ---
+old.t=1
+old.shrink=0.5
+
+repeat { ## for searching stepsize t
+
+
+V2=matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-old.t*Total.derivative.Phy.BJ
+V=V2[-c(1,length(V2[,1])),] ## delete intercept alpha0 and gamma
+
+S_V=sign(V)*(ifelse((abs(V)-(old.t*(1/n)*lambda3*c(v_weight,v_weight)*lambda4))>0,(abs(V)-(old.t*(1/n)*lambda3*c(v_weight,v_weight)*lambda4)),0)) ## the first weight is for alpha and the second weight is for beta
+
+if(all(S_V==0)){
+prox.twonorm=matrix(0,length(S_V),1)
+}else{
+prox.twonorm=(S_V/sqrt(sum(S_V^2)))*ifelse((sqrt(sum(S_V^2))-(old.t*(1/n)*lambda3*c(v_weight,v_weight)*(1-lambda4)))>0,sqrt(sum(S_V^2))-(old.t*(1/n)*lambda3*c(v_weight,v_weight)*(1-lambda4)),0)
+
+}
+
+
+G_t=(1/old.t)*(matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-c(V2[1,],prox.twonorm,V2[length(V2[,1]),]))
+u.hat=matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-(old.t*G_t)
+Prob=cbind(1,CovX)%*%(as.matrix(u.hat[1:length(old_alpha)],length(u.hat[1:length(old_alpha)]),1))
+
+component1 <- (-1 / n) * sum(
+  ifelse(CovZ== 1,
+         log(G.link(Prob)),
+         log(1 - G.link(Prob))))
+
+component2=(1/n)*0.5*sum(((Center_time-(u.hat[(length(old_alpha)+1):(length(old_alpha)+length(old_beta))]%*%t(center_X))-u.hat[length(u.hat)]*center_Z)^2))
+
+Lefthand.side=component1+component2
+
+Prob2=cbind(1,CovX)%*%(as.matrix(old_alpha,length(old_alpha),1))
+
+component3<- (-1 / n) * sum(
+  ifelse(CovZ== 1,
+         log(G.link(Prob2)),
+         log(1 - G.link(Prob2))))
+
+
+component4=(1/n)*0.5*sum(((Center_time-(old_beta%*%t(center_X))-old_gamma*center_Z)^2))
+Righthand.side=(component3+component4)-old.t*t(Total.derivative.Phy.BJ)%*%G_t+(old.t/2)*(sum(G_t^2))
+
+if (Lefthand.side<=Righthand.side){ ## condition to stop for searching t
+break
+}
+
+old.t=old.t*old.shrink
+
+} ## End of backtracking line search
+
+
+# --- Step: Final Proximal Update for this iteration ---
+
+# Step 1: Initial setup
+new.t <- old.t
+
+new.V <- matrix(c(old_alpha, old_beta, old_gamma), dim.total, 1) - new.t * Total.derivative.Phy.BJ
+new.Phy0 <- c(new.V[1, 1], new.V[nrow(new.V), 1])  ##estimates for alpha0 and gamma
+
+# Step 2: Extract the grouped part (excluding intercept and gamma)
+V_group <- matrix(
+  new.V[-c(1, nrow(new.V)), , drop = FALSE],   ##remove the first and last rows of the matrix new.V, and keep the result as a matrix (even if it has only one column).
+  nrow = group_number,
+  ncol = 2,
+  byrow = FALSE
+)
+
+# Step 3: Elementwise soft-thresholding (component-wise shrinkage)
+threshold_1 <- new.t * (1 / n) * lambda3 * v_weight * lambda4
+S_V <- sign(V_group) * pmax(abs(V_group) - threshold_1, 0)
+
+# Step 4: Group norm for each row (group l2 norm)
+S_V_norm <- sqrt(rowSums(S_V^2))
+
+# Step 5: Group-level soft-thresholding (for nonzero groups)
+threshold_2 <- new.t * (1 / n) * lambda3 * v_weight * (1 - lambda4)
+
+# Scaling factor: max(norm - threshold_2, 0) / norm
+shrink_factor <- ifelse(S_V_norm > 0,
+                        pmax(S_V_norm - threshold_2, 0) / S_V_norm,
+                        0)
+
+# Apply group-level shrinkage
+new.Phy <- S_V * shrink_factor
+
+
+old.objective=(component3+component4)+((1/n)*lambda3*(1-lambda4)*sum(v_weight*apply(old.Phy, 1, FUN = function(x) sqrt(sum(x^2)))))+((1/n)*lambda3*lambda4*sum(v_weight*apply(old.Phy,1,FUN = function(x) sum(abs(x)))))
+
+new.Prob2=cbind(1,CovX)%*%(as.matrix(c(new.Phy0[1],new.Phy[,1]),group_number+1,1))
+
+
+new.component3 <- (-1 / n) * sum(
+  ifelse(CovZ == 1,
+         log(G.link(new.Prob2)),
+         log(1 - G.link(new.Prob2)))
+)
+
+
+new.component4=(1/n)*0.5*sum(((Center_time-(new.Phy[,2]%*%t(center_X))-new.Phy0[2]*center_Z)^2))
+  
+new.objective=(new.component3+new.component4)+((1/n)*lambda3*(1-lambda4)*sum(v_weight*apply(new.Phy, 1, FUN = function(x) sqrt(sum(x^2)))))+((1/n)*lambda3*lambda4*sum(v_weight*apply(new.Phy, 1, FUN = function(x) sum(abs(x)))))
+
+if (abs(new.objective-old.objective)<10^{-3} || iterative>100){ ## condition to stop 
+break
+}
+
+
+old_alpha=c(new.Phy0[1],new.Phy[,1])
+old_beta=new.Phy[,2]
+old_gamma=new.Phy0[2]
+iterative=iterative+1
+
+} # End of Major loop
+
+
+Adaptiveestimates=c(new.Phy0[1],new.Phy[,1],new.Phy[,2],new.Phy0[2])
+
+# ----------------------------------------
+# CROSS-VALIDATION (CV)
+# ----------------------------------------
+
+
+cvsum=0
+total.loss=c()
+SEQ=sample(1:n, replace = FALSE)
+
+
+for(p in 1:K){
+
+if(p!=K){
+location=(quantity[p]*(p-1)+1):min((quantity[p]*p),n)
+}else{
+location=min(1+(quantity[p-1]*(p-1)),n):n
+}
+
+locationforLossfun=SEQ[location]
+random_location=SEQ[-location]
+cv_size=length(random_location)
+
+
+
+# Subset data for CV training set
+     CV_ObsTime = ObsTime[random_location]
+     CV_Delta = Delta[random_location]
+     CV_CovX = CovX[random_location,]
+     CV_CovZ = CovZ[random_location]
+
+
+# CV Centering
+CV_X_bar=matrix(rep(apply(CV_CovX,2,mean),cv_size),cv_size,dim_covariate,byrow=TRUE) 
+CV_Z_bar=mean(CV_CovZ)
+CV_center_Z=CV_CovZ-CV_Z_bar
+CV_center_X=CV_CovX-CV_X_bar
+
+# Create design matrix for alpha
+CV_X_alpha <- cbind(1, CV_CovX)  
+
+# Common component for beta and gamma
+CV_X_beta_gamma <- t(cbind(-CV_center_X, -CV_center_Z)) 
+
+
+# Initialize parameters for CV
+old_alpha=InitialAlpha
+old_beta=InitialBeta 
+old_gamma=InitialGamma
+
+adaptiveCViterative=0
+
+
+repeat { ## for all parameters
+
+###### Calculate failure time T ###### 
+old.Phy=matrix(c(old_alpha[-1],old_beta),group_number,2,byrow=FALSE)
+
+CV_Pi=CV_X_alpha%*%(as.matrix(old_alpha,length(old_alpha),1))
+CV_Pr=exp(CV_Pi)/(1+exp(CV_Pi))
+
+CV_W<- (CV_CovZ==1) * (1/CV_Pr) + (CV_CovZ==0) * (1)/(1-CV_Pr)
+error_time=CV_ObsTime-as.vector(old_beta%*%t(CV_CovX))-old_gamma*CV_CovZ
+
+
+CV_res_akm <- revisedAKME(times=error_time, failures=CV_Delta,variable=CV_CovZ, weights=CV_W)
+
+ CV_imputed_time = impute_survival_times(CV_ObsTime, CV_Delta, CV_CovZ, CV_CovX, old_beta, old_gamma, CV_res_akm)
+ CV_Center_time = CV_imputed_time - mean(CV_imputed_time)
+
+
+
+#########################################################################################################
+############################ calculate the derivative for all parameters  ###############################
+
+# Compute derivative.alpha
+g_link_pi <- G.link(CV_Pi)
+deriv_g_link_pi <- deri.G.link(CV_Pi)
+
+# Logical index for CovZ[random_location] == 1
+idx1 <- CV_CovZ == 1
+
+
+ alpha_coeff = numeric(cv_size)
+ alpha_coeff[idx1] = (-1) * (deriv_g_link_pi[idx1] / g_link_pi[idx1])
+ alpha_coeff[!idx1] = (1) * (deriv_g_link_pi[!idx1] / (1 - g_link_pi[!idx1]))
+ deriv_alpha = (1 / cv_size) * colSums(alpha_coeff * CV_X_alpha)
+
+
+
+# Compute residual terms 
+resid_term <- CV_Center_time - as.vector(CV_center_X%*% old_beta) - old_gamma * CV_center_Z
+# Compute derivative.betaandgamma for all
+deriv_beta_gamma_mat <- matrix(0, nrow =dim_covariate + 1 , ncol =cv_size )
+deriv_beta_gamma_mat <-sweep(CV_X_beta_gamma, 2, (1/cv_size) * resid_term, FUN = "*") ## sweep is used so that each element of the vector times each column of the matrix
+
+
+# Final result
+Total.derivative.Phy.BJ<- rbind(
+  matrix(deriv_alpha),
+  matrix(as.vector(rowSums(deriv_beta_gamma_mat)))
+)
+
+
+old.t=1
+old.shrink=0.5
+
+repeat { ## for searching stepsize t
+
+V2=matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-old.t*Total.derivative.Phy.BJ
+V=V2[-c(1,length(V2[,1])),] ## delete intercept alpha0 and gamma
+
+S_V=sign(V)*(ifelse((abs(V)-(old.t*(1/cv_size)*lambda3*c(v_weight,v_weight)*lambda4))>0,(abs(V)-(old.t*(1/cv_size)*lambda3*c(v_weight,v_weight)*lambda4)),0))
+if(all(S_V==0)){
+prox.twonorm=matrix(0,length(S_V),1)
+}else{
+prox.twonorm=(S_V/sqrt(sum(S_V^2)))*ifelse((sqrt(sum(S_V^2))-(old.t*(1/cv_size)*lambda3*c(v_weight,v_weight)*(1-lambda4)))>0,sqrt(sum(S_V^2))-(old.t*(1/cv_size)*lambda3*c(v_weight,v_weight)*(1-lambda4)),0)
+
+}
+
+
+G_t=(1/old.t)*(matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-c(V2[1,],prox.twonorm,V2[length(V2[,1]),]))
+u.hat=matrix(c(old_alpha,old_beta,old_gamma),dim.total,1)-(old.t*G_t)
+Prob_u=CV_X_alpha%*%(as.matrix(u.hat[1:length(old_alpha)],length(u.hat[1:length(old_alpha)]),1))
+
+component1<- (-1/cv_size) * sum(
+  ifelse(CV_CovZ == 1,
+         log(G.link(Prob_u)),
+         log(1 - G.link(Prob_u)))
+)
+
+
+component2=(1/cv_size)*0.5*sum(((CV_Center_time-(u.hat[(length(old_alpha)+1):(length(old_alpha)+length(old_beta))]%*%t(CV_center_X))-u.hat[length(u.hat)]*CV_center_Z)^2))
+
+Lefthand.side=component1+component2
+
+Prob2=CV_X_alpha%*%(as.matrix(old_alpha,length(old_alpha),1))
+
+component3=(-1/cv_size)* sum(
+  ifelse(CV_CovZ == 1,
+         log(G.link(Prob2)),
+         log(1 - G.link(Prob2)))
+)
+
+
+component4=(1/cv_size)*0.5*sum(((CV_Center_time-(old_beta%*%t(CV_center_X))-old_gamma*CV_center_Z)^2))
+Righthand.side=(component3+component4)-old.t*t(Total.derivative.Phy.BJ)%*%G_t+(old.t/2)*(sum(G_t^2))
+
+if (Lefthand.side<=Righthand.side){ ## condition to stop for searching t
+break
+}
+
+old.t=old.t*old.shrink
+
+} ## for repeat of backtracking line search
+
+new.t=old.t
+
+
+# Step 1: Update vector
+CV.new.V <- matrix(c(old_alpha, old_beta, old_gamma), dim.total, 1) - new.t * Total.derivative.Phy.BJ
+
+# Step 2: Extract alpha0 and gamma
+CV.new.Phy0 <- c(CV.new.V[1, 1], CV.new.V[nrow(CV.new.V), 1])
+
+# Step 3: Remove alpha0 and gamma, reshape to matrix (group_number x 2)
+V_group <- matrix(
+  CV.new.V[-c(1, nrow(CV.new.V)), , drop = FALSE],
+  nrow = group_number,
+  ncol = 2,
+  byrow = FALSE
+)
+
+# Step 4: Elementwise soft-thresholding (lasso component)
+threshold_1 <- new.t * (1 / cv_size) * lambda3 * v_weight * lambda4  # length = group_number
+S_V <- sign(V_group) * pmax(abs(V_group) - threshold_1, 0)
+
+# Step 5: Group norms
+S_V_norm <- sqrt(rowSums(S_V^2))
+
+# Step 6: Group-level threshold (group lasso component)
+threshold_2 <- new.t * (1 / cv_size) * lambda3 * v_weight * (1 - lambda4)
+
+# Step 7: Compute shrinkage factor (avoids division by zero)
+shrink_factor <- ifelse(S_V_norm > 0,
+                        pmax(S_V_norm - threshold_2, 0) / S_V_norm,
+                        0)
+
+# Step 8: Final shrunk Phy matrix
+CV.new.Phy<- S_V * shrink_factor
+
+
+old.objective=(component3+component4)+((1/cv_size)*lambda3*(1-lambda4)*sum(v_weight*apply(old.Phy, 1, FUN = function(x) sqrt(sum(x^2)))))+((1/cv_size)*lambda3*lambda4*sum(v_weight*apply(old.Phy,1,FUN = function(x) sum(abs(x)))))
+
+new.Prob2=CV_X_alpha%*%(as.matrix(c(CV.new.Phy0[1],CV.new.Phy[,1]),group_number+1,1))
+
+
+new.component3=(-1/cv_size)* sum(
+  ifelse(CV_CovZ == 1,
+         log(G.link(new.Prob2)),
+         log(1 - G.link(new.Prob2)))
+)
+
+
+new.component4=(1/cv_size)*0.5*sum(((CV_Center_time-(CV.new.Phy[,2]%*%t(CV_center_X))-CV.new.Phy0[2]*CV_center_Z)^2))
+  
+new.objective=(new.component3+new.component4)+((1/cv_size)*lambda3*(1-lambda4)*sum(v_weight*apply(CV.new.Phy, 1, FUN = function(x) sqrt(sum(x^2)))))+((1/cv_size)*lambda3*lambda4*sum(v_weight*apply(CV.new.Phy, 1, FUN = function(x) sum(abs(x)))))
+
+if (abs(new.objective-old.objective)<10^{-3} || adaptiveCViterative>100){ ## condition to stop for all the parameters
+break
+}
+
+
+old_alpha=c(CV.new.Phy0[1],CV.new.Phy[,1])
+old_beta=CV.new.Phy[,2]
+old_gamma=CV.new.Phy0[2]
+adaptiveCViterative=adaptiveCViterative+1
+
+} # End of CV Optimization
+
+
+
+
+# --- CV : Calculate CV Loss on Validation Set ---
+
+# Subset data for CV validation set
+Loss_ObsTime = ObsTime[locationforLossfun]
+Loss_Delta = Delta[locationforLossfun]
+Loss_CovX = CovX[locationforLossfun,]
+Loss_CovZ = CovZ[locationforLossfun]
+
+
+ # Validation set centering
+Loss_center_Z = Loss_CovZ - mean(Loss_CovZ)
+Loss_center_X = sweep(Loss_CovX, 2, colMeans(Loss_CovX), FUN = "-")
+
+CV.Prob=cbind(1,Loss_CovX)%*%(as.matrix(c(CV.new.Phy0[1],CV.new.Phy[,1]),group_number+1,1))
+
+
+CV.loss.component3<- (-1 / quantity[p]) * sum(
+  ifelse(Loss_CovZ == 1,
+         log(G.link(CV.Prob)),
+         log(1 - G.link(CV.Prob)))
+)
+
+
+
+Pr_val=exp(CV.Prob)/(1+exp(CV.Prob))
+
+W_val<- (Loss_CovZ==1) * (1/Pr_val) + (Loss_CovZ==0) * (1)/(1-Pr_val)
+error_time=Loss_ObsTime-as.vector(CV.new.Phy[,2]%*%t(Loss_CovX))-CV.new.Phy0[2]*Loss_CovZ
+ 
+res.akm = revisedAKME(times = error_time, failures = Loss_Delta, variable = Loss_CovZ, weights = W_val)
+     
+CV_imputed_time = impute_survival_times(Loss_ObsTime, Loss_Delta, Loss_CovZ, Loss_CovX, CV.new.Phy[, 2], CV.new.Phy0[2], res.akm)
+CV_Loss_Center_time = CV_imputed_time - mean(CV_imputed_time)
+
+CV.loss.component4=(1/quantity[p])*0.5*sum(((CV_Loss_Center_time-(CV.new.Phy[,2]%*%t(Loss_center_X))-CV.new.Phy0[2]*Loss_center_Z)^2))
+
+total.loss[p]=(CV.loss.component3+CV.loss.component4)/quantity[p]
+
+cvsum=cvsum+(total.loss[p]) 
+
+}## for p
+
+AdaptiveCV.BJ=cvsum/K
+CV.sd[row]=sd(total.loss)/sqrt(K)
+
+Final.matrix.BJ.adaptive[row,]=c(lambda3,lambda4,AdaptiveCV.BJ,Adaptiveestimates)
+
+row=row+1
+
+}##loop for Kappa
+}# loop for Lambda
+
+
+
+location=which(Final.matrix.BJ.adaptive[,3]==min(Final.matrix.BJ.adaptive[,3]))
+oneSE=min(Final.matrix.BJ.adaptive[,3])+CV.sd[location]
+loc2=which(Final.matrix.BJ.adaptive[,3]>=min(Final.matrix.BJ.adaptive[,3]) & Final.matrix.BJ.adaptive[,3]<=oneSE)
+minimum.GCV.BJ.adaptive=loc2[which.max(Final.matrix.BJ.adaptive[,3][loc2])]
+
+
+
+GG=length(Final.matrix.BJ.adaptive[minimum.GCV.BJ.adaptive,])
+alpha_sel=Final.matrix.BJ.adaptive[minimum.GCV.BJ.adaptive,][4:(dim_covariate+4)] ## new alpha
+beta_sel=Final.matrix.BJ.adaptive[minimum.GCV.BJ.adaptive,][((dim_covariate+4)+1):(GG-1)]               ## new beta
+gamma_est=Final.matrix.BJ.adaptive[minimum.GCV.BJ.adaptive,][GG]      ## new gamma
+
+
+return(list(
+    Alpha = alpha_sel,
+    Beta = beta_sel,
+    Gamma = gamma_est
+  ))
+
+} ## for function
+
+
 

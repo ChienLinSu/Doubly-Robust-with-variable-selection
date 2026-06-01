@@ -1,6 +1,8 @@
+The main proposed estimators for the average causal effect, θ(t), including the Kaplan–Meier estimator, the doubly weighted estimator, the g-formula estimator, 
+and the doubly robust estimators, are implemented as user-friendly functions. 
+These functions allow users to directly input the required data and obtain the corresponding estimates.
+
 ######################################################### Below are the customized R codes used in this paper ##########################################################################
-
-
 
 ################################################## Revised Adjusted Kaplan-Meier Estimator  ##################################################
 ##############################################################################################################################################

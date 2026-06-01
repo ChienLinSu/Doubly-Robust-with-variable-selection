@@ -1,6 +1,8 @@
+Here, we use simulated data to illustrate how the proposed R functions can be applied to obtain several estimators of the ACE presented in the manuscript.
 
-#######   Generate Data for Average Causal Effect Estimation based on Proposed Estimators   ####################################
 
+#####################################################   Generate Data   #########################################
+##################################################################################################################
 n=200 ## sample size
 true_beta=c(-0.3,0.8) ## parameters in the AFT model
 true_alpha=c(-0.2,0.4,0.6) ## parameter in the logistic regression model and -0.2 is the intercept term
@@ -37,6 +39,9 @@ Final.Data=as.data.frame(cbind(ObsTime,exp(ObsTime),Delta,CovZ,Cova1,Cova2))
 
 
 
+############## Fit the data to adjusted Kaplan-Meier Estimator  ###############################################################################
+##############################################################################################################################################
+
 Final.Data$CovZ=as.factor(Final.Data$CovZ)
 treatment_model <- glm(CovZ ~ Cova1+Cova2,
                        data=Final.Data, family="binomial"(link="logit"))
@@ -50,14 +55,14 @@ adjsurv <- adjustedsurv(data=Final.Data,
                         conf_int=TRUE,bootstrap=TRUE,
                         )###times=unique(c(0,sort(FinalData$Y[FinalData$Censor==1])))
 
-
-
 # calculate the whole difference curve
 adjdiff <- adjusted_curve_diff(adjsurv,group_1="1", group_2="0",conf_int=TRUE,use_boot=TRUE)
 
 target.time=adjdiff$time   ## time to calculate for the average causal effect
 Final.Data$CovZ=as.numeric(as.character(Final.Data$CovZ))
 
+######################### Minimize the objective loss function to obtain required marginal parameters estimators   ##########################################################
+#############################################################################################################################################################################
 
 # Define covariates
 cov_aft <- c("Cova1")
@@ -66,7 +71,6 @@ cov_log <- c("Cova1", "Cova2")
 
 # Parameter vector (Beta + gamma + Alpha)
 init_params <- c(0.8,0.4,-0.2,0.4,0.6)
-
 
 fit <- optim(
   par = init_params,
@@ -90,6 +94,7 @@ fit_out <- Loss_fun_BJ_logistic_fast(
   return_components = TRUE
 )
 
+
 ## function to estimate the intercept in the AFT model
 Estimate_beta0=function(fit_out){
 estimate=mean(fit_out$imputed_time)-sum(fit_out$Beta*apply(fit_out$CovX_aft,2,mean))-fit_out$gamma*mean(fit_out$CovZ)
@@ -100,14 +105,65 @@ return(estimate)
 Estimate_beta0(fit_out)
 
 
-############## Fit the simulated dataset using the proposed Estimators for ACE  ###############################################  
 
+###############################               Proposed ACE estimators        ##################################################################
+################################################################################################################################################
 ### K-M estimator for ACE
 KM_fun(t=0.1,ObsTime=Final.Data$ObsTime,Delta=Final.Data$Delta, CovZ=Final.Data$CovZ, weights = NULL)
 
-### Doubly Weighted Estimator
-
+## Doubly Weighted Estimator
 DW_fun(t=0.1, ObsTime=Final.Data$ObsTime, CovZ=Final.Data$CovZ, Cen_delta=1-Final.Data$Delta, weights=fit_out$IPTW) 
+
+
+
+## G-formula Estimator 
+G_formula_fun(t=0.1,ObsTime=Final.Data$ObsTime,
+                                  Delta=Final.Data$Delta,
+                                  CovZ=Final.Data$CovZ,
+                                  CovX=fit_out$CovX_aft,
+                                  est_beta0=Estimate_beta0(fit_out),
+                                  est_beta=fit_out$Beta,
+                                  est_gamma=fit_out$gamma,
+                                  est_alpha=fit_out$Alpha,
+                                  weights=fit_out$IPTW)
+
+## Doubly Robust Estimator
+
+DR_fun(t=0.1,ObsTime=Final.Data$ObsTime,
+                      Delta=Final.Data$Delta,
+                      CovZ=Final.Data$CovZ,
+                      CovX=fit_out$CovX_aft,
+                      est_beta0=Estimate_beta0(fit_out),
+                      est_beta=fit_out$Beta,
+                      est_gamma=fit_out$gamma,
+                      est_alpha=fit_out$Alpha,
+                       est_ps=fit_out$Pr,
+                      weights=fit_out$IPTW) 
+
+
+
+
+## Bootstrap tp obtain variance estimators for all proposed estimators
+FinalOutput=bootstrap_pipeline (data=Final.Data,
+                               covariates_logistic=cov_log,
+                               covariates_aft=cov_aft,
+                               time_var = "ObsTime",  ## column name for the ovserved time
+                               delta_var = "Delta",
+                               treat_var = "CovZ",
+                               times =target.time,   # times at which to compute estimators
+                               init_params=c(0.8,0.4,-0.2,0.4,0.6),  ## initial values for bootstrap
+                               B = 100,
+                               seed = 639245,
+                               n_cores = 1,   # >1 to attempt parallel (mclapply; not on Windows)
+                               verbose = TRUE)
+
+
+
+
+FinalOutput$curves$times
+FinalOutput$params_boot
+FinalOutput$curves$bootstrap$DR$se
+FinalOutput$curves$bootstrap$DW$point
 
 
 

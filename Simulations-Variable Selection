@@ -1,0 +1,92 @@
+
+
+################### Generate Data for Variable Selection  ##################################################
+
+n=400 ## sample size
+dim_covariate=20 ## number of covariates
+lo=0          ## corrlation between covariates
+true_beta=c(0.5,0,0.6,0,1,0,0.2,0,0.5,rep(0,dim_covariate-8))   ## 0.5 is an intercept for AFT model
+true_alpha=c(-0.1,0,0.8,-0.4,0,0,0.6,1,0,rep(0,dim_covariate-8))## for logistic regression
+true_gamma=1
+
+X1=runif(n,0,1)
+X2=rbinom(n,1,0.5)
+CovXX=mvrnorm(n = n, mu=rep(0,dim_covariate-2), Sigma=ar1_cor(dim_covariate-2,lo))
+CovX=cbind(X1,X2,CovXX)
+Original_CovX=CovX
+colnames(CovX) <- paste0("X", 1:dim_covariate)
+colnames(Original_CovX) <- paste0("X", 1:dim_covariate)
+p_beta=length(true_beta) ## include intercept term
+
+## logistic link
+pi=cbind(1,CovX)%*%(as.matrix(true_alpha,length(true_alpha),1))
+Prob=exp(pi)/(1+exp(pi))
+
+CovZ=rbinom(n,1,Prob)
+Original_CovZ=CovZ
+sum(CovZ)/n ## percentage of patients in the treated group
+
+### generate failure time
+
+failure=c()
+for(i in 1:n){
+Uniform=runif(1,0,1)
+if(CovZ[i]==1){
+failure[i]=exp(qnorm(1-Uniform, mean = 0, sd =0.5, lower.tail = TRUE, log.p = FALSE)+(c(1,CovX[i,])%*%(as.matrix(true_beta,length(true_beta),1)))+(true_gamma))
+}else{
+failure[i]=exp(qnorm(1-Uniform, mean = 0, sd =1, lower.tail = TRUE, log.p = FALSE)+(c(1,CovX[i,])%*%(as.matrix(true_beta,length(true_beta),1))))
+}
+}
+
+################Create Censoring time ########################
+tau=26 ## 26:30%; 
+Censor=runif(n,0,tau)
+ObsTime=ifelse(log(failure)<log(Censor),log(failure),log(Censor))   ## observed times
+Delta=ifelse(log(failure)<log(Censor),1,0)   ## censor indicator
+Cen_delta=ifelse(log(failure)>log(Censor),1,0)
+1-(sum(Delta)/n) ## censoring rate
+
+Original_ObsTime=ObsTime
+Original_Delta=Delta
+Original_Cen_delta=Cen_delta
+
+Final.Data=data.frame(id=1:n,ObsTime,Delta,CovZ,CovX)
+
+
+#### Sparse Group Lasso Approach ####
+
+seq.Lambda=Lambda.sequence(data=Final.Data,L=20,v_weight=rep(1,dim_covariate))
+seq.Kappa=c(0.2,0.4,0.6,0.8)
+result.SGL <- ASGL_VS_function(data=Final.Data,LambdaSeq=seq.Lambda,KappaSeq=seq.Kappa,InitialAlpha=true_alpha, InitialBeta=true_beta[-1], InitialGamma=1, v_weight=rep(1,dim_covariate),K=5)
+
+
+### Access each component using Sparse Group Lasso:
+result.SGL$Alpha
+result.SGL$Beta
+result.SGL$Gamma
+
+
+#### Adaptive Sparse Group Lasso Approach ####
+WW=matrix(c(result.SGL$Alpha[-1],result.SGL$Beta),2,length(result.SGL$Beta),byrow=TRUE)
+ASGL_weight=ifelse(apply(WW,2,sum)==0,10^4,1/apply(WW,2,function(x) sqrt(sum(x^2)))) ## inverse of the two norm which equals to the weight w
+ 
+seq.Lambda.ASGL=Lambda.sequence(data=Final.Data,L=20,v_weight=ASGL_weight)
+seq.Kappa=c(0.2,0.4,0.6,0.8)
+
+result.ASGL <- ASGL_VS_function(data=Final.Data,LambdaSeq=seq.Lambda.ASGL,KappaSeq=seq.Kappa,InitialAlpha=true_alpha, InitialBeta=true_beta[-1], InitialGamma=1, v_weight=ASGL_weight,K=5)
+
+result.ASGL$Alpha
+result.ASGL$Beta
+result.ASGL$Gamma
+
+
+
+
+
+
+
+
+
+
+
+

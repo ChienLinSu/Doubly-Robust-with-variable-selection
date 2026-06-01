@@ -1,2 +1,57 @@
 
 #######   Generate Data for Average Causal Effect Estimation based on Proposed Estimators   ####################################
+
+n=200 ## sample size
+true_beta=c(-0.3,0.8) ## parameters in the AFT model
+true_alpha=c(-0.2,0.4,0.6) ## parameter in the logistic regression model and -0.2 is the intercept term
+true_gamma=0.4  ## parameter for treatment effect
+
+## Generate two covariates 
+Cova1=rnorm(n,0,sd=sqrt(1.96/3))   
+Cova2=rbinom(n,1,0.5)
+
+## create the probability based on logistic link
+pi=cbind(1,CovX)%*%(as.matrix(true_alpha,length(true_alpha),1))
+Prob=exp(pi)/(1+exp(pi))
+
+## Generate the treatment assignment based on the previous probability
+CovZ=rbinom(n,1,Prob)
+
+failure=c()
+for(i in 1:n){
+Uniform=runif(1,0,1)
+if(CovZ[i]==1){
+failure[i]=exp(qnorm(1-Uniform, mean = 0, sd =1, lower.tail = TRUE, log.p = FALSE)+(c(1,CovX[i,1])%*%(as.matrix(true_beta,length(true_beta),1)))+(true_gamma))
+}else{
+failure[i]=exp(qnorm(1-Uniform, mean = 0, sd =1, lower.tail = TRUE, log.p = FALSE)+(c(1,CovX[i,1])%*%(as.matrix(true_beta,length(true_beta),1))))
+}
+}
+
+## Cretae observed time
+Censor=rexp(n,rate =1/6.2)  ##6.2:20% censoring rate
+ObsTime=ifelse(log(failure)<log(Censor),log(failure),log(Censor))
+Delta=ifelse(log(failure)<log(Censor),1,0)
+Cen_delta=ifelse(log(failure)>log(Censor),1,0)
+
+Final.Data=as.data.frame(cbind(ObsTime,Delta,CovZ,Cova1,Cova2))
+
+
+############## Fit the simulated dataset using the proposed Estimators for ACE  ###############################################  
+
+### K-M estimator for ACE
+KM_fun(t=0.1,ObsTime=Final.Data$ObsTime,Delta=Final.Data$Delta, CovZ=Final.Data$CovZ, weights = NULL)
+
+###
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -11,7 +11,7 @@ true_gamma=0.4  ## parameter for treatment effect
 ## Generate two covariates 
 Cova1=rnorm(n,0,sd=sqrt(1.96/3))   
 Cova2=rbinom(n,1,0.5)
-
+CovX=cbind(Cova1,Cova2)
 ## create the probability based on logistic link
 pi=cbind(1,CovX)%*%(as.matrix(true_alpha,length(true_alpha),1))
 Prob=exp(pi)/(1+exp(pi))

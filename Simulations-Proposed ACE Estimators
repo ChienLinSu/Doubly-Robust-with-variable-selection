@@ -148,11 +148,11 @@ FinalOutput=bootstrap_pipeline (data=Final.Data,
                                covariates_logistic=cov_log,
                                covariates_aft=cov_aft,
                                time_var = "ObsTime",  ## column name for the ovserved time
-                               delta_var = "Delta",
-                               treat_var = "CovZ",
+                               delta_var = "Delta",   ## Censoring indicator
+                               treat_var = "CovZ",    ## Treatment covariate
                                times =target.time,   # times at which to compute estimators
                                init_params=c(0.8,0.4,-0.2,0.4,0.6),  ## initial values for bootstrap
-                               B = 100,
+                               B = 100,           ## bumber of boostrap for variance estimation
                                seed = 639245,
                                n_cores = 1,   # >1 to attempt parallel (mclapply; not on Windows)
                                verbose = TRUE)

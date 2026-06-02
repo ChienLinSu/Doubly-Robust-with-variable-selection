@@ -58,7 +58,7 @@ adjsurv <- adjustedsurv(data=Final.Data,
 # calculate the whole difference curve
 adjdiff <- adjusted_curve_diff(adjsurv,group_1="1", group_2="0",conf_int=TRUE,use_boot=TRUE)
 
-target.time=adjdiff$time   ## time to calculate for the average causal effect
+target.time=adjdiff$time   ## target time for calculating the average causal effect
 Final.Data$CovZ=as.numeric(as.character(Final.Data$CovZ))
 
 ######################### Minimize the objective loss function to obtain required marginal parameters estimators   ##########################################################

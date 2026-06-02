@@ -112,12 +112,12 @@ Estimate_beta0(fit_out)
 KM_fun(t=0.1,ObsTime=Final.Data$ObsTime,Delta=Final.Data$Delta, CovZ=Final.Data$CovZ, weights = NULL)
 
 ## Doubly Weighted Estimator
-DW_fun(t=0.1, ObsTime=Final.Data$ObsTime, CovZ=Final.Data$CovZ, Cen_delta=1-Final.Data$Delta, weights=fit_out$IPTW) 
+DW_fun(t=1.5, ObsTime=Final.Data$ObsTime, CovZ=Final.Data$CovZ, Cen_delta=1-Final.Data$Delta, weights=fit_out$IPTW) 
 
 
 
 ## G-formula Estimator 
-G_formula_fun(t=0.1,ObsTime=Final.Data$ObsTime,
+G_formula_fun(t=1.5,ObsTime=Final.Data$ObsTime,
                                   Delta=Final.Data$Delta,
                                   CovZ=Final.Data$CovZ,
                                   CovX=fit_out$CovX_aft,
@@ -129,7 +129,7 @@ G_formula_fun(t=0.1,ObsTime=Final.Data$ObsTime,
 
 ## Doubly Robust Estimator
 
-DR_fun(t=0.1,ObsTime=Final.Data$ObsTime,
+DR_fun(t=1.5,ObsTime=Final.Data$ObsTime,
                       Delta=Final.Data$Delta,
                       CovZ=Final.Data$CovZ,
                       CovX=fit_out$CovX_aft,

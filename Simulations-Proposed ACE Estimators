@@ -3,7 +3,7 @@ Here, we use simulated data to illustrate how the proposed R functions can be ap
 
 #####################################################   Generate Data   #########################################
 ##################################################################################################################
-n=200 ## sample size
+n=400 ## sample size
 true_beta=c(-0.3,0.8) ## parameters in the AFT model
 true_alpha=c(-0.2,0.4,0.6) ## parameter in the logistic regression model and -0.2 is the intercept term
 true_gamma=0.4  ## parameter for treatment effect
